@@ -1,0 +1,18 @@
+[package]
+name = "rbus"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = "0.13"
+rmp-serde = "0.15"
+serde = {version = "1.0", features = ["derive"] }
+serde_bytes = "0.11.5"
+tokio = { version = "1.11.0", features = ["full"] }
+redis = { version = "0.21.0", features = ["tokio-comp", "aio", "connection-manager"] }
+anyhow = "1.0.44"
+uuid = {version = "0.8.2", features = ["serde", "v4"]}
+thiserror = "1.0"
+async-trait = "0.1.51"
