@@ -66,8 +66,8 @@ async fn main() -> Result<()> {
     // println!("divide(1,0) => {:?}", calc.divide(1f64, 0f64).await);
 
     let router = server::Router::new(ObjectID::new("tester", "1.0"))
-        .handle("hello", server::handler!(hello))
-        .handle("ping", server::async_handler!(ping));
+        .handle("hello", sync_handler!(hello))
+        .handle("ping", async_handler!(ping));
 
     let req = Request::new(router.id(), "ping");
     let req = req.add_argument("azmy")?;
@@ -87,11 +87,4 @@ fn hello(input: request::Arguments) -> Result<request::Arguments> {
 async fn ping(input: request::Arguments) -> Result<request::Arguments> {
     let name = request::inputs!(input, String)?;
     Ok(request::returns!(format!("pong {}", name)))
-}
-
-struct M {}
-impl M {
-    pub async fn test(input: request::Arguments) -> Result<request::Arguments> {
-        bail!("failed")
-    }
 }

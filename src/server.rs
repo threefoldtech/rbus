@@ -23,65 +23,79 @@ pub trait Handler {
     async fn handle(&self, a: Arguments) -> Result<Arguments>;
 }
 
-pub struct HandlerFn(fn(Arguments) -> Result<Arguments>);
+pub struct SyncHandler<F>
+where
+    F: Fn(Arguments) -> Result<Arguments>,
+{
+    f: F,
+}
 
-impl HandlerFn {
-    pub fn from(f: fn(Arguments) -> Result<Arguments>) -> HandlerFn {
-        HandlerFn(f)
+impl<F> SyncHandler<F>
+where
+    F: Fn(Arguments) -> Result<Arguments>,
+{
+    pub fn from(f: F) -> Self {
+        SyncHandler { f }
     }
 }
 
 #[async_trait]
-impl Handler for HandlerFn {
+impl<F> Handler for SyncHandler<F>
+where
+    F: Fn(Arguments) -> Result<Arguments> + Send + Sync,
+{
     async fn handle(&self, a: Arguments) -> Result<Arguments> {
-        self.0(a)
-    }
-}
-
-pub type AsyncFn = fn(Arguments) -> Pin<Box<dyn Future<Output = Result<Arguments>> + Send>>;
-
-pub struct HandlerAsyncFn(AsyncFn);
-
-impl HandlerAsyncFn {
-    pub fn from(f: AsyncFn) -> HandlerAsyncFn {
-        HandlerAsyncFn(f)
+        (self.f)(a)
     }
 }
 
 #[macro_export]
-macro_rules! handler {
+macro_rules! sync_handler {
     ($i:ident) => {{
-        use $crate::server::HandlerFn;
-        HandlerFn::from($i)
+        use $crate::server::SyncHandler;
+        SyncHandler::from($i)
     }};
 }
 
 #[macro_export]
 macro_rules! async_handler {
     ($i:ident) => {{
-        use anyhow::Result;
-        use std::future::Future;
-        use std::pin::Pin;
-        use $crate::request::Arguments;
-        use $crate::server::HandlerAsyncFn;
-
-        HandlerAsyncFn::from(
-            |input: Arguments| -> Pin<Box<dyn Future<Output = Result<Arguments>> + Send>> {
-                Box::pin($i(input))
-            },
-        )
+        use $crate::server::AsyncHandler;
+        AsyncHandler::from($i)
     }};
 }
 
-pub use async_handler;
-pub use handler;
+pub struct AsyncHandler<F, Fut>
+where
+    F: Fn(Arguments) -> Fut,
+    Fut: Future<Output = Result<Arguments>> + Send + Sync,
+{
+    f: F,
+}
 
-#[async_trait]
-impl Handler for HandlerAsyncFn {
-    async fn handle(&self, a: Arguments) -> Result<Arguments> {
-        self.0(a).await
+impl<F, Fut> AsyncHandler<F, Fut>
+where
+    F: Fn(Arguments) -> Fut,
+    Fut: Future<Output = Result<Arguments>> + Send + Sync,
+{
+    pub fn from(f: F) -> Self {
+        Self { f }
     }
 }
+
+#[async_trait]
+impl<F, Fut> Handler for AsyncHandler<F, Fut>
+where
+    F: Fn(Arguments) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Arguments>> + Send + Sync,
+{
+    async fn handle(&self, a: Arguments) -> Result<Arguments> {
+        (self.f)(a).await
+    }
+}
+
+pub use async_handler;
+pub use sync_handler;
 
 pub struct Router {
     o: ObjectID,
