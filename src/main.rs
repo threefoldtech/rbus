@@ -4,7 +4,7 @@ extern crate anyhow;
 use anyhow::{Context, Result};
 
 pub mod client;
-#[macro_use]
+//#[macro_use]
 pub mod request;
 pub mod server;
 use request::{ObjectID, Request, Values};
@@ -57,6 +57,11 @@ impl CalculatorStub {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    simple_logger::SimpleLogger::new()
+        .with_level(log::LevelFilter::Debug)
+        .init()
+        .unwrap();
+
     // let client = client::Client::new("redis://localhost:6379").await?;
 
     // let calc = CalculatorStub::new(client);
@@ -66,17 +71,25 @@ async fn main() -> Result<()> {
     // println!("divide(1,0) => {:?}", calc.divide(1f64, 0f64).await);
 
     let router = server::Router::new(ObjectID::new("tester", "1.0"))
-        .handle("hello", sync_handler!(hello))
-        .handle("ping", async_handler!(ping));
+        .handle("hello", server::SyncHandler::from(hello))
+        .handle("ping", server::AsyncHandler::from(ping))
+        .handle("state", server::AsyncHandlerWithState::from(pingState, 10));
 
-    let req = Request::new(router.id(), "ping");
-    let req = req.add_argument("azmy")?;
-    let response = router.dispatch(req).await;
+    let mut server =
+        crate::server::redis::Server::new("server", "redis://localhost:6379", 3).await?;
+    server.register(router);
 
-    println!("response: {:?}", response);
-    let answer = request::inputs!(response.arguments, String).unwrap();
-    println!("answer: {}", answer);
+    server.run().await;
     Ok(())
+
+    // let req = Request::new(router.id(), "state");
+    // let req = req.add_argument("azmy")?;
+    // let response = router.dispatch(req).await;
+
+    // println!("response: {:?}", response);
+    // let answer = request::inputs!(response.arguments, String).unwrap();
+    // println!("answer: {}", answer);
+    // Ok(())
 }
 
 fn hello(input: request::Arguments) -> Result<request::Arguments> {
@@ -87,4 +100,9 @@ fn hello(input: request::Arguments) -> Result<request::Arguments> {
 async fn ping(input: request::Arguments) -> Result<request::Arguments> {
     let name = request::inputs!(input, String)?;
     Ok(request::returns!(format!("pong {}", name)))
+}
+
+async fn pingState(this: i64, input: request::Arguments) -> Result<request::Arguments> {
+    let name = request::inputs!(input, String)?;
+    Ok(request::returns!(format!("pong {} {}", name, this)))
 }

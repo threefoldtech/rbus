@@ -183,6 +183,10 @@ impl Request {
         }
     }
 
+    pub fn from_slice(slice: &[u8]) -> Result<Request> {
+        Ok(rmp_serde::decode::from_read_ref(slice)?)
+    }
+
     pub fn add_argument<T>(mut self, argument: T) -> Result<Self>
     where
         T: Serialize,
@@ -220,6 +224,16 @@ impl Response {
 
     pub fn is_error(&self) -> bool {
         matches!(&self.error, Some(e) if e.len() > 0)
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        let mut buffer: Vec<u8> = Vec::new();
+
+        let encoder = Serializer::new(&mut buffer);
+        let mut encoder = encoder.with_struct_map();
+        self.serialize(&mut encoder)
+            .context("failed to encode response")?;
+        Ok(buffer)
     }
 }
 

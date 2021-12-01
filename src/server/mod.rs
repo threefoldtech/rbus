@@ -3,9 +3,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
-use std::pin::Pin;
 use thiserror::Error;
+pub mod redis;
 
+/// Server errors
 #[derive(Error, Debug)]
 pub enum ServerError {
     #[error("unknown method '{0}'")]
@@ -18,11 +19,13 @@ pub trait Service {
     async fn dispatch(&self, request: Request) -> Response;
 }
 
+/// Handlers must implement this trait
 #[async_trait]
 pub trait Handler {
     async fn handle(&self, a: Arguments) -> Result<Arguments>;
 }
 
+/// Implements handler for functions
 pub struct SyncHandler<F>
 where
     F: Fn(Arguments) -> Result<Arguments>,
@@ -47,22 +50,6 @@ where
     async fn handle(&self, a: Arguments) -> Result<Arguments> {
         (self.f)(a)
     }
-}
-
-#[macro_export]
-macro_rules! sync_handler {
-    ($i:ident) => {{
-        use $crate::server::SyncHandler;
-        SyncHandler::from($i)
-    }};
-}
-
-#[macro_export]
-macro_rules! async_handler {
-    ($i:ident) => {{
-        use $crate::server::AsyncHandler;
-        AsyncHandler::from($i)
-    }};
 }
 
 pub struct AsyncHandler<F, Fut>
@@ -92,6 +79,55 @@ where
     async fn handle(&self, a: Arguments) -> Result<Arguments> {
         (self.f)(a).await
     }
+}
+
+pub struct AsyncHandlerWithState<F, Fut, S>
+where
+    F: Fn(S, Arguments) -> Fut,
+    Fut: Future<Output = Result<Arguments>> + Send + Sync,
+    S: Clone + Send + Sync,
+{
+    s: S,
+    f: F,
+}
+
+impl<F, Fut, S> AsyncHandlerWithState<F, Fut, S>
+where
+    F: Fn(S, Arguments) -> Fut,
+    Fut: Future<Output = Result<Arguments>> + Send + Sync,
+    S: Clone + Send + Sync,
+{
+    pub fn from(f: F, s: S) -> Self {
+        Self { f, s }
+    }
+}
+
+#[async_trait]
+impl<F, Fut, S> Handler for AsyncHandlerWithState<F, Fut, S>
+where
+    F: Fn(S, Arguments) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Arguments>> + Send + Sync,
+    S: Clone + Send + Sync,
+{
+    async fn handle(&self, a: Arguments) -> Result<Arguments> {
+        (self.f)(self.s.clone(), a).await
+    }
+}
+
+#[macro_export]
+macro_rules! sync_handler {
+    ($i:ident) => {{
+        use $crate::server::SyncHandler;
+        SyncHandler::from($i)
+    }};
+}
+
+#[macro_export]
+macro_rules! async_handler {
+    ($i:ident) => {{
+        use $crate::server::AsyncHandler;
+        AsyncHandler::from($i)
+    }};
 }
 
 pub use async_handler;
@@ -144,7 +180,7 @@ impl Service for Router {
         };
 
         Response {
-            id: request.id,
+            id: request.reply_to,
             arguments: args,
             error: err,
         }
