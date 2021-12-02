@@ -15,7 +15,7 @@ type Routers = HashMap<String, Box<dyn Service + Send + Sync>>;
 
 pub struct Server {
     module: String,
-    redis: ConnectionManager,
+    client: Redis,
     workers: u32,
     routers: Routers,
 }
@@ -31,13 +31,9 @@ impl Server {
         assert!(workers > 1, "workers must be at least 1");
 
         let client = Redis::open(url.as_ref())?;
-        let redis = client
-            .get_tokio_connection_manager()
-            .await
-            .context("failed to open connection to broker")?;
 
         Ok(Server {
-            redis,
+            client,
             workers,
             module: module.as_ref().into(),
             routers: Routers::new(),
@@ -52,7 +48,7 @@ impl Server {
             .insert(service.id().to_string(), Box::new(service));
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(self) -> Result<()> {
         // routers can not be changed afterwords. so we need to spawn workers here
         // and pass them a copy of the routers, and a way for them to pull for messages.
 
@@ -71,17 +67,18 @@ impl Server {
         let routers = Arc::new(routers);
 
         for _ in 0..self.workers - 1 {
-            let worker = Worker::new(self.redis.clone(), Arc::clone(&routers));
+            let worker = Worker::new(self.client.clone(), Arc::clone(&routers));
             tokio::spawn(worker.work(tx.clone()));
         }
 
+        let mut con = self.client.clone().get_tokio_connection_manager().await?;
         while let Some(sender) = rx.recv().await {
             // fetch message from queue, then push to sender
             loop {
                 // we have this done in a loop so we make sure we can
                 // renew the connection if it failed
                 let result: redis::RedisResult<Option<(String, Vec<u8>)>> =
-                    cmd.query_async(&mut self.redis).await;
+                    cmd.query_async(&mut con).await;
                 let (queue, payload) = match result {
                     Ok(Some((queue, payload))) => (queue, payload),
                     Ok(None) => continue,
@@ -102,6 +99,7 @@ impl Server {
                     }
                 };
 
+                log::debug!("method: {}.{}", queue, request.method);
                 if let Err(_request) = sender.send(request) {
                     // todo: to avoid request loss, may be this should be pushed
                     // back to the same queue!
@@ -110,22 +108,23 @@ impl Server {
                 break;
             }
         }
+        Ok(())
     }
 }
 
 #[derive(Clone)]
 struct Worker {
     routers: Arc<Routers>,
-    redis: ConnectionManager,
+    client: Redis,
 }
 
 impl Worker {
-    fn new(redis: ConnectionManager, routers: Arc<Routers>) -> Self {
-        Self { redis, routers }
+    fn new(client: Redis, routers: Arc<Routers>) -> Self {
+        Self { client, routers }
     }
 
-    async fn work(mut self, tx: ChannelSender) {
-        loop {
+    async fn work(self, tx: ChannelSender) {
+        'next: loop {
             let (ms, mr) = oneshot::channel::<request::Request>();
             // if sent failed, means receiver has shutdown, so it's safe to return
             if let Err(_) = tx.send(ms).await {
@@ -140,8 +139,6 @@ impl Worker {
                 }
             };
 
-            log::debug!("processing request: {}", message.id);
-
             // dispatch message to handlers.
             let response = match self.routers.get(&message.object.to_string()) {
                 Some(service) => service.dispatch(message).await,
@@ -152,7 +149,6 @@ impl Worker {
                 },
             };
 
-            log::debug!("response for request {} is ready", response.id);
             // encode response
             let data = match response.encode() {
                 Ok(data) => data,
@@ -162,25 +158,36 @@ impl Worker {
                 }
             };
 
-            log::debug!("pushing response");
-            let result: redis::RedisResult<()> = redis::cmd("RPUSH")
-                .arg(&response.id)
-                .arg(&data)
-                .query_async(&mut self.redis)
-                .await;
-            if let Err(err) = result {
-                log::error!("failed to push result to redis: {}", err);
-                continue;
-            }
-            log::debug!("response pushed back");
-            let result: redis::RedisResult<()> = redis::cmd("EXPIRE")
-                .arg(&response.id)
-                .arg(RESPONSE_TTL)
-                .query_async(&mut self.redis)
-                .await;
-            if let Err(err) = result {
-                log::error!("failed to push result to redis: {}", err);
-                continue;
+            loop {
+                let mut con = match self.client.get_async_connection().await {
+                    Ok(con) => con,
+                    Err(err) => {
+                        log::error!("failed to get redis connection: {}", err);
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        continue;
+                    }
+                };
+
+                let result: redis::RedisResult<()> = redis::cmd("RPUSH")
+                    .arg(&response.id)
+                    .arg(&data)
+                    .query_async(&mut con)
+                    .await;
+                if let Err(err) = result {
+                    log::error!("failed to push result to redis: {}", err);
+                    continue 'next;
+                }
+                let result: redis::RedisResult<()> = redis::cmd("EXPIRE")
+                    .arg(&response.id)
+                    .arg(RESPONSE_TTL)
+                    .query_async(&mut con)
+                    .await;
+                if let Err(err) = result {
+                    log::error!("failed to push result to redis: {}", err);
+                    continue 'next;
+                }
+
+                break;
             }
         }
     }

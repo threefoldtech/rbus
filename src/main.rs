@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
 
     let router = server::Router::new(ObjectID::new("tester", "1.0"))
         .handle("hello", server::SyncHandler::from(hello))
-        .handle("ping", server::AsyncHandler::from(ping))
+        .handle("add", server::AsyncHandler::from(add))
         .handle("state", server::AsyncHandlerWithState::from(pingState, 10));
 
     let mut server =
@@ -97,9 +97,10 @@ fn hello(input: request::Arguments) -> Result<request::Arguments> {
     Ok(request::returns!(format!("hello {}", name)))
 }
 
-async fn ping(input: request::Arguments) -> Result<request::Arguments> {
-    let name = request::inputs!(input, String)?;
-    Ok(request::returns!(format!("pong {}", name)))
+async fn add(input: request::Arguments) -> Result<request::Arguments> {
+    let (a, b) = request::inputs!(input, f64, f64)?;
+    println!("adding {} + {}", a, b);
+    Ok(request::returns!(a + b))
 }
 
 async fn pingState(this: i64, input: request::Arguments) -> Result<request::Arguments> {

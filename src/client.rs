@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use redis::{aio::ConnectionManager, Client as Redis};
+use redis::Client as Redis;
 
 use crate::request::{Arguments, Request, Response};
 
@@ -7,7 +7,7 @@ pub use crate::request::Error;
 
 #[derive(Clone)]
 pub struct Client {
-    redis: ConnectionManager,
+    client: Redis,
 }
 
 impl Client {
@@ -16,12 +16,8 @@ impl Client {
         S: AsRef<str>,
     {
         let client = Redis::open(url.as_ref())?;
-        let redis = client
-            .get_tokio_connection_manager()
-            .await
-            .context("failed to open connection to broker")?;
 
-        Ok(Client { redis })
+        Ok(Client { client })
     }
 
     // a new version with cancellation context need to be implemented
@@ -30,18 +26,18 @@ impl Client {
         S: AsRef<str>,
     {
         let queue = format!("{}.{}", module.as_ref(), request.object);
-
+        let mut con = self.client.get_async_connection().await?;
         redis::cmd("RPUSH")
             .arg(queue)
             .arg(request.encode().context("failed to encode request")?)
-            .query_async(&mut self.redis)
+            .query_async(&mut con)
             .await?;
 
         // wait for response
         let (_, result): (String, Vec<u8>) = redis::cmd("BLPOP")
             .arg(request.id)
             .arg(0)
-            .query_async(&mut self.redis)
+            .query_async(&mut con)
             .await?;
 
         let response =
