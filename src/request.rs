@@ -23,7 +23,7 @@ impl ObjectID {
 
 impl Display for ObjectID {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        if self.version.len() == 0 {
+        if self.version.is_empty() {
             write!(f, "{}", self.name)?;
         } else {
             write!(f, "{}@{}", self.name, self.version)?;
@@ -175,8 +175,8 @@ impl Request {
         let id = uuid::Uuid::new_v4().to_string();
         // generate a new ID
         Request {
+            object,
             id: id.clone(),
-            object: object,
             method: method.into(),
             arguments: vec![],
             reply_to: id,
@@ -223,7 +223,7 @@ impl Response {
     }
 
     pub fn is_error(&self) -> bool {
-        matches!(&self.error, Some(e) if e.len() > 0)
+        matches!(&self.error, Some(e) if !e.is_empty())
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {

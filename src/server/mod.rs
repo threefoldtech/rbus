@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::future::Future;
 use thiserror::Error;
+
 pub mod redis;
+pub use crate::server::redis::Server as RedisServer;
 
 /// Server errors
 #[derive(Error, Debug)]
@@ -113,25 +115,6 @@ where
         (self.f)(self.s.clone(), a).await
     }
 }
-
-#[macro_export]
-macro_rules! sync_handler {
-    ($i:ident) => {{
-        use $crate::server::SyncHandler;
-        SyncHandler::from($i)
-    }};
-}
-
-#[macro_export]
-macro_rules! async_handler {
-    ($i:ident) => {{
-        use $crate::server::AsyncHandler;
-        AsyncHandler::from($i)
-    }};
-}
-
-pub use async_handler;
-pub use sync_handler;
 
 pub struct Router {
     o: ObjectID,

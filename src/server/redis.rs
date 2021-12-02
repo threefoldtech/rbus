@@ -1,7 +1,7 @@
 use super::Service;
 use crate::request;
 use anyhow::{Context, Result};
-use redis::{aio::ConnectionManager, Client as Redis};
+use redis::Client as Redis;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -30,7 +30,7 @@ impl Server {
     {
         assert!(workers > 1, "workers must be at least 1");
 
-        let client = Redis::open(url.as_ref())?;
+        let client = Redis::open(url.as_ref()).context("failed to connect to redis")?;
 
         Ok(Server {
             client,
@@ -71,7 +71,12 @@ impl Server {
             tokio::spawn(worker.work(tx.clone()));
         }
 
-        let mut con = self.client.clone().get_tokio_connection_manager().await?;
+        let mut con = self
+            .client
+            .clone()
+            .get_tokio_connection_manager()
+            .await
+            .context("failed to build connection manager")?;
         while let Some(sender) = rx.recv().await {
             // fetch message from queue, then push to sender
             loop {
@@ -127,7 +132,7 @@ impl Worker {
         'next: loop {
             let (ms, mr) = oneshot::channel::<request::Request>();
             // if sent failed, means receiver has shutdown, so it's safe to return
-            if let Err(_) = tx.send(ms).await {
+            if tx.send(ms).await.is_err() {
                 return;
             }
 

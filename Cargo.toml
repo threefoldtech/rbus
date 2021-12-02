@@ -5,6 +5,13 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "rbus"
+path = "src/examples.rs"
+
 [dependencies]
 base64 = "0.13"
 rmp-serde = "0.15"

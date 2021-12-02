@@ -4,11 +4,9 @@ extern crate anyhow;
 use anyhow::{Context, Result};
 
 pub mod client;
-//#[macro_use]
 pub mod request;
 pub mod server;
 use request::{ObjectID, Request, Values};
-use server::Service;
 
 struct CalculatorStub {
     client: client::Client,
