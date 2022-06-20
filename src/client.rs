@@ -1,23 +1,16 @@
+use crate::protocol::{Arguments, Request, Response};
 use anyhow::{Context, Result};
-use redis::Client as Redis;
-
-use crate::request::{Arguments, Request, Response};
-
-pub use crate::request::Error;
+use bb8_redis::{bb8::Pool, RedisConnectionManager};
+use redis::AsyncCommands;
 
 #[derive(Clone)]
 pub struct Client {
-    client: Redis,
+    pool: Pool<RedisConnectionManager>,
 }
 
 impl Client {
-    pub async fn new<S>(url: S) -> Result<Client>
-    where
-        S: AsRef<str>,
-    {
-        let client = Redis::open(url.as_ref())?;
-
-        Ok(Client { client })
+    pub fn new<S>(pool: Pool<RedisConnectionManager>) -> Client {
+        Self { pool }
     }
 
     // a new version with cancellation context need to be implemented
@@ -25,23 +18,24 @@ impl Client {
     where
         S: AsRef<str>,
     {
+        let mut con = self
+            .pool
+            .get()
+            .await
+            .context("failed to get redis connection")?;
+
         let queue = format!("{}.{}", module.as_ref(), request.object);
-        let mut con = self.client.get_async_connection().await?;
-        redis::cmd("RPUSH")
-            .arg(queue)
-            .arg(request.encode().context("failed to encode request")?)
-            .query_async(&mut con)
-            .await?;
+
+        con.rpush(queue, &request)
+            .await
+            .context("failed to send request")?;
 
         // wait for response
-        let (_, result): (String, Vec<u8>) = redis::cmd("BLPOP")
-            .arg(request.id)
-            .arg(0)
-            .query_async(&mut con)
-            .await?;
-
-        let response =
-            Response::from_slice(result.as_slice()).context("failed to load response")?;
+        // todo: timeout on response
+        let (_, response): (String, Response) = con
+            .blpop(&request.id, 0)
+            .await
+            .context("failed t get response")?;
 
         if response.is_error() {
             bail!("zbus error: {}", response.error.unwrap());

@@ -3,14 +3,15 @@ extern crate anyhow;
 
 use anyhow::{Context, Result};
 
-pub mod client;
-pub mod request;
-pub mod server;
-use request::{ObjectID, Request, Values};
+use rbus::client;
+use rbus::protocol;
+use rbus::server;
+
+use protocol::{ObjectID, Request, Values};
 
 struct CalculatorStub {
     client: client::Client,
-    object: request::ObjectID,
+    object: protocol::ObjectID,
 }
 
 impl CalculatorStub {
@@ -23,9 +24,9 @@ impl CalculatorStub {
 
     async fn add(&self, a: f64, b: f64) -> Result<f64> {
         let req = Request::new(self.object.clone(), "Add")
-            .add_argument(a)
+            .arg(a)
             .context("failed to encode `a`")?
-            .add_argument(b)
+            .arg(b)
             .context("failed to encode `b`")?;
 
         let mut client = self.client.clone();
@@ -36,15 +37,15 @@ impl CalculatorStub {
 
     async fn divide(&self, a: f64, b: f64) -> Result<f64> {
         let req = Request::new(self.object.clone(), "Divide")
-            .add_argument(a)
+            .arg(a)
             .context("failed to add first argument")?
-            .add_argument(b)
+            .arg(b)
             .context("failed to add second argument")?;
 
         let mut client = self.client.clone();
         let response = client.request("server", req).await?;
 
-        let (v, e): (f64, Option<client::Error>) = response.values()?;
+        let (v, e): (f64, Option<protocol::Error>) = response.values()?;
         if let Some(err) = e {
             bail!(err);
         }
@@ -68,13 +69,14 @@ async fn main() -> Result<()> {
     // println!("divide(1,2) => {:?}", calc.divide(1f64, 2f64).await);
     // println!("divide(1,0) => {:?}", calc.divide(1f64, 0f64).await);
 
+    let pool = rbus::pool("redis:://localhost:6379").await?;
+
     let router = server::Router::new(ObjectID::new("tester", "1.0"))
         .handle("hello", server::SyncHandler::from(hello))
         .handle("add", server::AsyncHandler::from(add))
-        .handle("state", server::AsyncHandlerWithState::from(pingState, 10));
+        .handle("state", server::AsyncHandlerWithState::from(10, pingState));
 
-    let mut server =
-        crate::server::redis::Server::new("server", "redis://localhost:6379", 3).await?;
+    let mut server = server::RedisServer::new(pool, "server", 3).await?;
     server.register(router);
 
     server.run().await;
@@ -90,18 +92,18 @@ async fn main() -> Result<()> {
     // Ok(())
 }
 
-fn hello(input: request::Arguments) -> Result<request::Arguments> {
-    let name = request::inputs!(input, String)?;
-    Ok(request::returns!(format!("hello {}", name)))
+fn hello(input: protocol::Arguments) -> Result<protocol::Arguments> {
+    let name = protocol::inputs!(input, String)?;
+    Ok(protocol::returns!(format!("hello {}", name)))
 }
 
-async fn add(input: request::Arguments) -> Result<request::Arguments> {
-    let (a, b) = request::inputs!(input, f64, f64)?;
+async fn add(input: protocol::Arguments) -> Result<protocol::Arguments> {
+    let (a, b) = protocol::inputs!(input, f64, f64)?;
     println!("adding {} + {}", a, b);
-    Ok(request::returns!(a + b))
+    Ok(protocol::returns!(a + b))
 }
 
-async fn pingState(this: i64, input: request::Arguments) -> Result<request::Arguments> {
-    let name = request::inputs!(input, String)?;
-    Ok(request::returns!(format!("pong {} {}", name, this)))
+async fn pingState(this: i64, input: protocol::Arguments) -> Result<String> {
+    let name = protocol::inputs!(input, String)?;
+    Ok(format!("pong {} {}", name, this))
 }

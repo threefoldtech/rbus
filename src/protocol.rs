@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
@@ -70,7 +71,7 @@ impl Container for Arguments {
 #[macro_export]
 macro_rules! returns {
     ($($i:expr),*) => {{
-        use $crate::request::{Arguments, Container};
+        use $crate::protocol::{Arguments, Container};
         let mut args = Arguments::new();
 
         $(args.add($i).unwrap();)*
@@ -82,14 +83,14 @@ macro_rules! returns {
 macro_rules! inputs {
     ($i:expr, $t:ty) => {
         {
-            use $crate::request::{Values};
+            use $crate::protocol::{Values};
             use anyhow::Result;
             let t: Result<($t,)> = $i.values();
             t.map(|v| v.0)
         }
     };
     ($i:expr, $($t:ty),+) => {{
-        use $crate::request::{Values};
+        use $crate::protocol::{Values};
         use anyhow::Result;
         let t: Result<($($t),+)> = $i.values();
         t
@@ -183,27 +184,50 @@ impl Request {
         }
     }
 
-    pub fn from_slice(slice: &[u8]) -> Result<Request> {
-        Ok(rmp_serde::decode::from_read_ref(slice)?)
-    }
-
-    pub fn add_argument<T>(mut self, argument: T) -> Result<Self>
+    pub fn arg<T>(mut self, argument: T) -> Result<Self>
     where
         T: Serialize,
     {
         self.arguments.add(argument)?;
         Ok(self)
     }
+}
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+impl FromRedisValue for Request {
+    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        let bytes = match v {
+            Value::Data(bytes) => bytes,
+            _ => {
+                return Err(redis::RedisError::from((
+                    redis::ErrorKind::TypeError,
+                    "expecting binary data",
+                )))
+            }
+        };
+
+        rmp_serde::decode::from_read_ref(bytes).map_err(|err| {
+            redis::RedisError::from((
+                redis::ErrorKind::TypeError,
+                "failed to decode request",
+                err.to_string(),
+            ))
+        })
+    }
+}
+
+impl ToRedisArgs for Request {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + redis::RedisWrite,
+    {
         let mut buffer: Vec<u8> = Vec::new();
 
         let encoder = Serializer::new(&mut buffer);
         let mut encoder = encoder.with_struct_map();
         self.serialize(&mut encoder)
-            .context("failed to encode request")?;
+            .expect("failed to encode response");
 
-        Ok(buffer)
+        out.write_arg(&buffer);
     }
 }
 
@@ -218,22 +242,46 @@ pub struct Response {
 }
 
 impl Response {
-    pub fn from_slice(slice: &[u8]) -> Result<Response> {
-        Ok(rmp_serde::decode::from_read_ref(slice)?)
-    }
-
     pub fn is_error(&self) -> bool {
         matches!(&self.error, Some(e) if !e.is_empty())
     }
+}
 
-    pub fn encode(&self) -> Result<Vec<u8>> {
+impl FromRedisValue for Response {
+    fn from_redis_value(v: &Value) -> RedisResult<Self> {
+        let bytes = match v {
+            Value::Data(bytes) => bytes,
+            _ => {
+                return Err(redis::RedisError::from((
+                    redis::ErrorKind::TypeError,
+                    "expecting binary data",
+                )))
+            }
+        };
+
+        rmp_serde::decode::from_read_ref(bytes).map_err(|err| {
+            redis::RedisError::from((
+                redis::ErrorKind::TypeError,
+                "failed to decode request",
+                err.to_string(),
+            ))
+        })
+    }
+}
+
+impl ToRedisArgs for Response {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + redis::RedisWrite,
+    {
         let mut buffer: Vec<u8> = Vec::new();
 
         let encoder = Serializer::new(&mut buffer);
         let mut encoder = encoder.with_struct_map();
         self.serialize(&mut encoder)
-            .context("failed to encode response")?;
-        Ok(buffer)
+            .expect("failed to encode response");
+
+        out.write_arg(&buffer);
     }
 }
 
@@ -242,6 +290,14 @@ impl Response {
 pub struct Error {
     #[serde(rename = "Message")]
     pub message: String,
+}
+
+impl Error {
+    pub fn new<S: Into<String>>(message: S) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
 }
 
 #[cfg(test)]
