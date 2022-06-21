@@ -1,13 +1,65 @@
 #[macro_use]
 extern crate anyhow;
 
+use std::convert::TryInto;
+
 use anyhow::{Context, Result};
 
 use rbus::client;
 use rbus::protocol;
-use rbus::server;
 
-use protocol::{ObjectID, Request, Values};
+use protocol::{Arguments, ObjectID, Request, Values};
+use rbus::server::{self, Object};
+
+pub trait Calculator {
+    fn add(&self, a: f64, b: f64) -> Result<f64>;
+}
+
+pub struct CalculatorObject<T>
+where
+    T: Calculator,
+{
+    inner: T,
+}
+
+#[async_trait::async_trait]
+impl<T> Object for CalculatorObject<T>
+where
+    T: Calculator + Send + Sync + 'static,
+{
+    fn id(&self) -> ObjectID {
+        ObjectID::new("Calculator", "1.0")
+    }
+
+    async fn dispatch(&self, request: Request) -> protocol::Result<Arguments> {
+        match request.method.as_str() {
+            "add" => {
+                let a = request.arguments.at(0)?;
+                let b = request.arguments.at(1)?;
+
+                Ok(self.inner.add(a, b).into())
+            }
+            _ => Err(protocol::RemoteError::UnknownMethod(request.method)),
+        }
+    }
+}
+
+impl<T> From<T> for CalculatorObject<T>
+where
+    T: Calculator,
+{
+    fn from(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+struct CalculatorImpl;
+
+impl Calculator for CalculatorImpl {
+    fn add(&self, a: f64, b: f64) -> Result<f64> {
+        Ok(a + b)
+    }
+}
 
 struct CalculatorStub {
     client: client::Client,
@@ -22,17 +74,17 @@ impl CalculatorStub {
         }
     }
 
-    async fn add(&self, a: f64, b: f64) -> Result<f64> {
-        let req = Request::new(self.object.clone(), "Add")
-            .arg(a)
-            .context("failed to encode `a`")?
-            .arg(b)
-            .context("failed to encode `b`")?;
+    async fn add(&self, a: f64, b: f64) -> protocol::Result<(f64, f64)> {
+        let req = Request::new(self.object.clone(), "Add").arg(a)?.arg(b)?;
 
         let mut client = self.client.clone();
-        let (x,): (f64,) = client.request("server", req).await?.values()?;
+        let out = client.request("server", req).await.unwrap();
 
-        Ok(x)
+        out.into()
+
+        // let (a,): (f64,) = out.try_into()?;
+
+        // Ok(a)
     }
 
     async fn divide(&self, a: f64, b: f64) -> Result<f64> {
@@ -45,7 +97,7 @@ impl CalculatorStub {
         let mut client = self.client.clone();
         let response = client.request("server", req).await?;
 
-        let (v, e): (f64, Option<protocol::Error>) = response.values()?;
+        let (v, e): (f64, Option<protocol::RemoteError>) = response.values()?;
         if let Some(err) = e {
             bail!(err);
         }
@@ -71,13 +123,10 @@ async fn main() -> Result<()> {
 
     let pool = rbus::pool("redis:://localhost:6379").await?;
 
-    let router = server::Router::new(ObjectID::new("tester", "1.0"))
-        .handle("hello", server::SyncHandler::from(hello))
-        .handle("add", server::AsyncHandler::from(add))
-        .handle("state", server::AsyncHandlerWithState::from(10, pingState));
+    let calc = CalculatorObject::from(CalculatorImpl);
 
     let mut server = server::RedisServer::new(pool, "server", 3).await?;
-    server.register(router);
+    server.register(calc);
 
     server.run().await;
     Ok(())
@@ -90,20 +139,4 @@ async fn main() -> Result<()> {
     // let answer = request::inputs!(response.arguments, String).unwrap();
     // println!("answer: {}", answer);
     // Ok(())
-}
-
-fn hello(input: protocol::Arguments) -> Result<protocol::Arguments> {
-    let name = protocol::inputs!(input, String)?;
-    Ok(protocol::returns!(format!("hello {}", name)))
-}
-
-async fn add(input: protocol::Arguments) -> Result<protocol::Arguments> {
-    let (a, b) = protocol::inputs!(input, f64, f64)?;
-    println!("adding {} + {}", a, b);
-    Ok(protocol::returns!(a + b))
-}
-
-async fn pingState(this: i64, input: protocol::Arguments) -> Result<String> {
-    let name = protocol::inputs!(input, String)?;
-    Ok(format!("pong {} {}", name, this))
 }

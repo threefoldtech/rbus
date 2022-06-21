@@ -1,7 +1,6 @@
 use super::Object;
-use crate::protocol;
-use crate::protocol::{Request, Response};
-use anyhow::{Context, Result};
+use super::{Error, Result};
+use crate::protocol::{Arguments, Request, Response};
 use bb8_redis::{bb8::Pool, RedisConnectionManager};
 use redis::AsyncCommands;
 use std::collections::HashMap;
@@ -108,14 +107,28 @@ impl Worker {
         }
     }
 
-    async fn respond(&self, response: Response) -> Result<()> {
+    async fn respond<S: Into<String>>(&self, id: S, ret: Result<Arguments>) -> anyhow::Result<()> {
+        use anyhow::Context;
+
+        let id = id.into();
+
+        let (args, err): (Arguments, Option<String>) = match ret {
+            Ok(args) => (args, None),
+            Err(err) => (Arguments::default(), Some(format!("{}", err))),
+        };
+
+        let response = Response {
+            id: id.clone(),
+            arguments: args,
+            error: err,
+        };
+
         let mut con = self
             .pool
             .get()
             .await
             .context("failed to get redis connection")?;
 
-        let id = response.id.clone();
         con.rpush(&id, response)
             .await
             .context("failed to push response")?;
@@ -131,18 +144,14 @@ impl workers::Work for Worker {
 
     async fn run(&self, input: Self::Input) -> Self::Output {
         // dispatch message to handlers.
-
-        let response = match self.routers.get(&input.object.to_string()) {
+        let id = input.object.to_string();
+        let response = match self.routers.get(&id) {
             Some(service) => service.dispatch(input).await,
-            None => protocol::Response {
-                id: input.id,
-                arguments: protocol::Arguments::new(),
-                error: Some("unknown module".into()),
-            },
+            None => Err(Error::UnknownObject(id.clone())),
         };
 
-        if let Err(err) = self.respond(response).await {
-            log::error!("failed to encode response: {}", err);
+        if let Err(err) = self.respond(id, response).await {
+            log::error!("failed to send response: {}", err);
         }
     }
 }
