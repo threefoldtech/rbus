@@ -1,18 +1,17 @@
 #[macro_use]
 extern crate anyhow;
 
-use std::convert::TryInto;
-
 use anyhow::{Context, Result};
 
 use rbus::client;
 use rbus::protocol;
 
-use protocol::{Arguments, ObjectID, Request, Values};
+use protocol::{ObjectID, Output, Request};
 use rbus::server::{self, Object};
 
 pub trait Calculator {
-    fn add(&self, a: f64, b: f64) -> Result<f64>;
+    fn add(&self, a: f64, b: f64) -> Result<(f64, f64)>;
+    fn divide(&self, a: f64, b: f64) -> Result<f64>;
 }
 
 pub struct CalculatorObject<T>
@@ -28,18 +27,20 @@ where
     T: Calculator + Send + Sync + 'static,
 {
     fn id(&self) -> ObjectID {
-        ObjectID::new("Calculator", "1.0")
+        ObjectID::new("calculator", "1.0")
     }
 
-    async fn dispatch(&self, request: Request) -> protocol::Result<Arguments> {
+    async fn dispatch(&self, request: Request) -> protocol::Result<Output> {
         match request.method.as_str() {
-            "add" => {
-                let a = request.arguments.at(0)?;
-                let b = request.arguments.at(1)?;
-
-                Ok(self.inner.add(a, b).into())
-            }
-            _ => Err(protocol::RemoteError::UnknownMethod(request.method)),
+            "Add" => Ok(self
+                .inner
+                .add(request.inputs.at(0)?, request.inputs.at(1)?)
+                .into()),
+            "Divide" => Ok(self
+                .inner
+                .divide(request.inputs.at(0)?, request.inputs.at(1)?)
+                .into()),
+            _ => Err(protocol::Error::UnknownMethod(request.method)),
         }
     }
 }
@@ -56,8 +57,15 @@ where
 struct CalculatorImpl;
 
 impl Calculator for CalculatorImpl {
-    fn add(&self, a: f64, b: f64) -> Result<f64> {
-        Ok(a + b)
+    fn add(&self, a: f64, b: f64) -> Result<(f64, f64)> {
+        log::debug!("adding({}, {})", a, b);
+        Ok((a + b, a - b))
+    }
+    fn divide(&self, a: f64, b: f64) -> Result<f64> {
+        if b == 0.0 {
+            bail!("cannot divide by zero")
+        }
+        Ok(a / b)
     }
 }
 
@@ -74,40 +82,36 @@ impl CalculatorStub {
         }
     }
 
-    async fn add(&self, a: f64, b: f64) -> protocol::Result<(f64, f64)> {
+    async fn add(&self, a: f64, b: f64) -> protocol::Result<f64> {
         let req = Request::new(self.object.clone(), "Add").arg(a)?.arg(b)?;
 
         let mut client = self.client.clone();
-        let out = client.request("server", req).await.unwrap();
+        let out = client.request("server", req).await?;
 
         out.into()
-
-        // let (a,): (f64,) = out.try_into()?;
-
-        // Ok(a)
     }
 
-    async fn divide(&self, a: f64, b: f64) -> Result<f64> {
-        let req = Request::new(self.object.clone(), "Divide")
-            .arg(a)
-            .context("failed to add first argument")?
-            .arg(b)
-            .context("failed to add second argument")?;
+    async fn add_sub(&self, a: f64, b: f64) -> protocol::Result<(f64, f64)> {
+        let req = Request::new(self.object.clone(), "AddSub").arg(a)?.arg(b)?;
 
         let mut client = self.client.clone();
-        let response = client.request("server", req).await?;
+        let out = client.request("server", req).await?;
 
-        let (v, e): (f64, Option<protocol::RemoteError>) = response.values()?;
-        if let Some(err) = e {
-            bail!(err);
-        }
+        out.into()
+    }
 
-        Ok(v)
+    async fn divide(&self, a: f64, b: f64) -> protocol::Result<f64> {
+        let req = Request::new(self.object.clone(), "Divide").arg(a)?.arg(b)?;
+
+        let mut client = self.client.clone();
+        let out = client.request("server", req).await?;
+        log::debug!("got output: {:?}", out);
+        out.into()
     }
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main_() -> Result<()> {
     simple_logger::SimpleLogger::new()
         .with_level(log::LevelFilter::Debug)
         .init()
@@ -121,13 +125,14 @@ async fn main() -> Result<()> {
     // println!("divide(1,2) => {:?}", calc.divide(1f64, 2f64).await);
     // println!("divide(1,0) => {:?}", calc.divide(1f64, 0f64).await);
 
-    let pool = rbus::pool("redis:://localhost:6379").await?;
+    let pool = rbus::pool("redis://localhost:6379").await?;
 
     let calc = CalculatorObject::from(CalculatorImpl);
 
     let mut server = server::RedisServer::new(pool, "server", 3).await?;
     server.register(calc);
 
+    println!("running server");
     server.run().await;
     Ok(())
 
@@ -139,4 +144,26 @@ async fn main() -> Result<()> {
     // let answer = request::inputs!(response.arguments, String).unwrap();
     // println!("answer: {}", answer);
     // Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    simple_logger::SimpleLogger::new()
+        .with_level(log::LevelFilter::Debug)
+        .init()
+        .unwrap();
+
+    let pool = rbus::pool("redis://localhost:6379").await?;
+
+    let client = client::Client::new(pool);
+
+    let calc = CalculatorStub::new(client);
+
+    println!("making calls");
+    println!("add(1,2) => {:?}", calc.add(1f64, 2f64).await);
+    println!("add_sub(1,2) => {:?}", calc.add_sub(1f64, 2f64).await);
+    println!("divide(1,2) => {:?}", calc.divide(10f64, 3f64).await);
+    // println!("divide(1,0) => {:?}", calc.divide(1f64, 0f64).await);
+
+    Ok(())
 }

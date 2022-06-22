@@ -10,7 +10,7 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "rbus"
-path = "src/examples.rs"
+path = "tests/examples.rs"
 
 [dependencies]
 base64 = "0.13"

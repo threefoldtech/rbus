@@ -1,6 +1,6 @@
 use super::Object;
 use super::{Error, Result};
-use crate::protocol::{Arguments, Request, Response};
+use crate::protocol::{Output, Request, Response};
 use bb8_redis::{bb8::Pool, RedisConnectionManager};
 use redis::AsyncCommands;
 use std::collections::HashMap;
@@ -57,6 +57,7 @@ impl Server {
             .map(|k| format!("{}.{}", module, k))
             .collect();
 
+        log::debug!("pulling from: {:?}", queues);
         let worker = Worker::new(self.pool.clone(), routers);
         let mut workers = workers::WorkerPool::new(worker, self.workers);
 
@@ -107,20 +108,22 @@ impl Worker {
         }
     }
 
-    async fn respond<S: Into<String>>(&self, id: S, ret: Result<Arguments>) -> anyhow::Result<()> {
+    async fn respond<S: Into<String>>(&self, id: S, ret: Result<Output>) -> anyhow::Result<()> {
         use anyhow::Context;
 
         let id = id.into();
 
-        let (args, err): (Arguments, Option<String>) = match ret {
-            Ok(args) => (args, None),
-            Err(err) => (Arguments::default(), Some(format!("{}", err))),
-        };
-
-        let response = Response {
-            id: id.clone(),
-            arguments: args,
-            error: err,
+        let response = match ret {
+            Ok(output) => Response {
+                id: id.clone(),
+                output: output,
+                error: None,
+            },
+            Err(err) => Response {
+                id: id.clone(),
+                output: Output::default(),
+                error: Some(err.to_string()),
+            },
         };
 
         let mut con = self
@@ -144,10 +147,11 @@ impl workers::Work for Worker {
 
     async fn run(&self, input: Self::Input) -> Self::Output {
         // dispatch message to handlers.
-        let id = input.object.to_string();
-        let response = match self.routers.get(&id) {
+        let id = input.id.clone();
+        let object = input.object.to_string();
+        let response = match self.routers.get(&object) {
             Some(service) => service.dispatch(input).await,
-            None => Err(Error::UnknownObject(id.clone())),
+            None => Err(Error::UnknownObject(object.clone())),
         };
 
         if let Err(err) = self.respond(id, response).await {

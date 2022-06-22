@@ -1,4 +1,4 @@
-use crate::protocol::{Arguments, Error, ObjectID, Request, Result};
+use crate::protocol::{Error, ObjectID, Output, Request, Result, Tuple};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -16,13 +16,13 @@ pub enum ServerError {
 #[async_trait]
 pub trait Object {
     fn id(&self) -> ObjectID;
-    async fn dispatch(&self, request: Request) -> Result<Arguments>;
+    async fn dispatch(&self, request: Request) -> Result<Output>;
 }
 
 /// Handlers must implement this trait
 #[async_trait]
 pub trait Handler {
-    async fn handle(&self, a: Arguments) -> Result<Arguments>;
+    async fn handle(&self, a: Tuple) -> Result<Output>;
 }
 
 pub struct Router {
@@ -54,12 +54,12 @@ impl Object for Router {
         self.o.clone()
     }
 
-    async fn dispatch(&self, request: Request) -> Result<Arguments> {
+    async fn dispatch(&self, request: Request) -> Result<Output> {
         let handler = match self.handlers.get(&request.method) {
             Some(handler) => handler,
             None => return Err(Error::UnknownMethod(request.method)),
         };
 
-        handler.handle(request.arguments).await
+        handler.handle(request.inputs).await
     }
 }

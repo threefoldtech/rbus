@@ -1,14 +1,13 @@
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use rmp_serde::Serializer;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_bytes::ByteBuf;
-use std::convert::TryFrom;
 use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 
 #[derive(Debug, Serialize, Deserialize, thiserror::Error)]
 #[error("{message}")]
 pub struct CallError {
+    #[serde(rename = "Message")]
     pub message: String,
 }
 
@@ -67,11 +66,22 @@ impl Display for ObjectID {
     }
 }
 
+fn encode<T: Serialize>(o: T) -> Result<ByteBuf> {
+    let mut buffer: Vec<u8> = Vec::new();
+
+    let encoder = Serializer::new(&mut buffer);
+    let mut encoder = encoder.with_struct_map();
+    o.serialize(&mut encoder)
+        .map_err(|e| Error::Encoding(e.to_string()))?;
+
+    Ok(ByteBuf::from(buffer))
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Arguments(Vec<serde_bytes::ByteBuf>);
+pub struct Tuple(Vec<serde_bytes::ByteBuf>);
 
-impl Arguments {
+impl Tuple {
     pub fn at<'a, T>(&'a self, i: usize) -> Result<T>
     where
         T: Deserialize<'a>,
@@ -87,14 +97,7 @@ impl Arguments {
     where
         T: Serialize,
     {
-        let mut buffer: Vec<u8> = Vec::new();
-
-        let encoder = Serializer::new(&mut buffer);
-        let mut encoder = encoder.with_struct_map();
-        o.serialize(&mut encoder)
-            .map_err(|e| Error::Encoding(e.to_string()))?;
-
-        self.0.push(ByteBuf::from(buffer));
+        self.0.push(encode(o)?);
         Ok(())
     }
 
@@ -103,93 +106,9 @@ impl Arguments {
     }
 }
 
-impl Debug for Arguments {
+impl Debug for Tuple {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         write!(f, "Arguments(len: {})", self.0.len())
-    }
-}
-
-impl<T, E> From<std::result::Result<T, E>> for Arguments
-where
-    T: Serialize,
-    E: Display,
-{
-    fn from(res: std::result::Result<T, E>) -> Self {
-        let mut args = Arguments::default();
-        match res {
-            Ok(t) => {
-                args.add(t).unwrap();
-                args.add(Option::<CallError>::None).unwrap();
-            }
-            Err(e) => {
-                args.add(Option::<T>::None).unwrap();
-                args.add(Some(CallError::from(e.to_string()))).unwrap();
-            }
-        };
-
-        args
-    }
-}
-
-impl<'a, A> From<Arguments> for Result<A>
-where
-    A: DeserializeOwned,
-{
-    fn from(args: Arguments) -> Self {
-        let a: Option<A> = args.at(0)?;
-        match a {
-            Some(a) => Ok(a),
-            None => {
-                let e: CallError = args.at(1)?;
-                Err(Error::Call(e))
-            }
-        }
-    }
-}
-
-impl<A> TryFrom<Arguments> for (A,)
-where
-    A: DeserializeOwned,
-{
-    type Error = Error;
-    fn try_from(args: Arguments) -> Result<Self> {
-        Ok((args.at(0)?,))
-    }
-}
-
-impl<A, B> TryFrom<Arguments> for (A, B)
-where
-    A: DeserializeOwned,
-    B: DeserializeOwned,
-{
-    type Error = Error;
-    fn try_from(args: Arguments) -> Result<Self> {
-        Ok((args.at(0)?, args.at(1)?))
-    }
-}
-
-impl<A, B, C> TryFrom<Arguments> for (A, B, C)
-where
-    A: DeserializeOwned,
-    B: DeserializeOwned,
-    C: DeserializeOwned,
-{
-    type Error = Error;
-    fn try_from(args: Arguments) -> Result<Self> {
-        Ok((args.at(0)?, args.at(1)?, args.at(2)?))
-    }
-}
-
-impl<'a, A, B, C, D> TryFrom<Arguments> for (A, B, C, D)
-where
-    A: DeserializeOwned,
-    B: DeserializeOwned,
-    C: DeserializeOwned,
-    D: DeserializeOwned,
-{
-    type Error = Error;
-    fn try_from(args: Arguments) -> Result<Self> {
-        Ok((args.at(0)?, args.at(1)?, args.at(2)?, args.at(3)?))
     }
 }
 
@@ -197,8 +116,8 @@ where
 pub struct Request {
     #[serde(rename = "ID")]
     pub id: String,
-    #[serde(rename = "Arguments")]
-    pub arguments: Arguments,
+    #[serde(rename = "Inputs")]
+    pub inputs: Tuple,
     #[serde(rename = "Object")]
     pub object: ObjectID,
     #[serde(rename = "ReplyTo")]
@@ -215,7 +134,7 @@ impl Request {
             object,
             id: id.clone(),
             method: method.into(),
-            arguments: Arguments::default(),
+            inputs: Tuple::default(),
             reply_to: id,
         }
     }
@@ -224,7 +143,7 @@ impl Request {
     where
         T: Serialize,
     {
-        self.arguments.add(argument)?;
+        self.inputs.add(argument)?;
         Ok(self)
     }
 }
@@ -267,20 +186,56 @@ impl ToRedisArgs for Request {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct Output {
+    #[serde(rename = "Data")]
+    pub data: serde_bytes::ByteBuf,
+    #[serde(rename = "Error")]
+    pub error: Option<CallError>,
+}
+
+impl<T, E> From<std::result::Result<T, E>> for Output
+where
+    T: Serialize,
+    E: Display,
+{
+    fn from(res: std::result::Result<T, E>) -> Self {
+        let (data, error) = match res {
+            Ok(t) => (encode(t).unwrap(), None),
+            Err(err) => (
+                ByteBuf::default(),
+                Some(CallError {
+                    message: err.to_string(),
+                }),
+            ),
+        };
+
+        Self { data, error }
+    }
+}
+
+impl<T> From<Output> for Result<T>
+where
+    T: DeserializeOwned,
+{
+    fn from(out: Output) -> Self {
+        if let Some(err) = out.error {
+            return Err(Error::Call(err));
+        }
+
+        log::debug!("load type {}", std::any::type_name::<T>());
+        rmp_serde::decode::from_read_ref(&out.data).map_err(|e| Error::Encoding(e.to_string()))
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Response {
     #[serde(rename = "ID")]
     pub id: String,
-    #[serde(rename = "Arguments")]
-    pub arguments: Arguments,
+    #[serde(rename = "Output")]
+    pub output: Output,
     #[serde(rename = "Error")]
     pub error: Option<String>,
-}
-
-impl Response {
-    pub fn is_error(&self) -> bool {
-        matches!(&self.error, Some(e) if !e.is_empty())
-    }
 }
 
 impl FromRedisValue for Response {

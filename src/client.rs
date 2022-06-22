@@ -1,5 +1,4 @@
-use crate::protocol::{Arguments, Request, Response};
-use anyhow::{Context, Result};
+use crate::protocol::{Error, Output, Request, Response, Result};
 use bb8_redis::{bb8::Pool, RedisConnectionManager};
 use redis::AsyncCommands;
 
@@ -9,38 +8,37 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new<S>(pool: Pool<RedisConnectionManager>) -> Client {
+    pub fn new(pool: Pool<RedisConnectionManager>) -> Client {
         Self { pool }
     }
 
     // a new version with cancellation context need to be implemented
-    pub async fn request<S>(&mut self, module: S, request: Request) -> Result<Arguments>
+    pub async fn request<S>(&mut self, module: S, request: Request) -> Result<Output>
     where
         S: AsRef<str>,
     {
-        let mut con = self
-            .pool
-            .get()
-            .await
-            .context("failed to get redis connection")?;
+        let mut con =
+            self.pool.get().await.map_err(|err| {
+                Error::Protocol(format!("failed to get redis connection: {}", err))
+            })?;
 
         let queue = format!("{}.{}", module.as_ref(), request.object);
 
         con.rpush(queue, &request)
             .await
-            .context("failed to send request")?;
+            .map_err(|err| Error::Protocol(format!("failed to send request: {}", err)))?;
 
         // wait for response
         // todo: timeout on response
         let (_, response): (String, Response) = con
             .blpop(&request.id, 0)
             .await
-            .context("failed t get response")?;
+            .map_err(|err| Error::Protocol(format!("failed to get response: {}", err)))?;
 
-        if response.is_error() {
-            bail!("zbus error: {}", response.error.unwrap());
+        if let Some(err) = response.error {
+            return Err(Error::Protocol(err));
         }
 
-        Ok(response.arguments)
+        Ok(response.output)
     }
 }
