@@ -7,8 +7,9 @@ use rbus::client;
 use rbus::protocol;
 
 use protocol::{ObjectID, Output, Request};
-use rbus::server::{self, Object};
+use rbus::server::{self, interface, Object};
 
+#[interface]
 pub trait Calculator {
     fn add(&self, a: f64, b: f64) -> Result<(f64, f64)>;
     fn divide(&self, a: f64, b: f64) -> Result<f64>;

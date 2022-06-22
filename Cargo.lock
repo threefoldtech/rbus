@@ -309,6 +309,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "macros"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "matches"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -481,6 +489,7 @@ dependencies = [
  "base64",
  "bb8-redis",
  "log",
+ "macros",
  "redis",
  "rmp-serde",
  "serde",

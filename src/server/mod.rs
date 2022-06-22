@@ -63,3 +63,6 @@ impl Object for Router {
         handler.handle(request.inputs).await
     }
 }
+
+#[cfg(feature = "macros")]
+pub use macros::interface;
