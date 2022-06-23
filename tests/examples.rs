@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate anyhow;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use rbus::client;
 use rbus::protocol;
@@ -9,54 +9,16 @@ use rbus::protocol;
 use protocol::{ObjectID, Output, Request};
 use rbus::server::{self, interface, Object};
 
-#[interface]
+#[interface(name = "calculator", version = "1.0")]
 pub trait Calculator {
     fn add(&self, a: f64, b: f64) -> Result<(f64, f64)>;
     fn divide(&self, a: f64, b: f64) -> Result<f64>;
-}
-
-pub struct CalculatorObject<T>
-where
-    T: Calculator,
-{
-    inner: T,
-}
-
-#[async_trait::async_trait]
-impl<T> Object for CalculatorObject<T>
-where
-    T: Calculator + Send + Sync + 'static,
-{
-    fn id(&self) -> ObjectID {
-        ObjectID::new("calculator", "1.0")
-    }
-
-    async fn dispatch(&self, request: Request) -> protocol::Result<Output> {
-        match request.method.as_str() {
-            "Add" => Ok(self
-                .inner
-                .add(request.inputs.at(0)?, request.inputs.at(1)?)
-                .into()),
-            "Divide" => Ok(self
-                .inner
-                .divide(request.inputs.at(0)?, request.inputs.at(1)?)
-                .into()),
-            _ => Err(protocol::Error::UnknownMethod(request.method)),
-        }
-    }
-}
-
-impl<T> From<T> for CalculatorObject<T>
-where
-    T: Calculator,
-{
-    fn from(inner: T) -> Self {
-        Self { inner }
-    }
+    async fn something(&self) -> Result<()>;
 }
 
 struct CalculatorImpl;
 
+#[async_trait::async_trait]
 impl Calculator for CalculatorImpl {
     fn add(&self, a: f64, b: f64) -> Result<(f64, f64)> {
         log::debug!("adding({}, {})", a, b);
@@ -67,6 +29,9 @@ impl Calculator for CalculatorImpl {
             bail!("cannot divide by zero")
         }
         Ok(a / b)
+    }
+    async fn something(&self) -> Result<()> {
+        Ok(())
     }
 }
 

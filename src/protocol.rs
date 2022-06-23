@@ -12,9 +12,9 @@ pub struct CallError {
 }
 
 impl CallError {
-    fn from<S: Into<String>>(message: S) -> Self {
+    fn from<S: Display>(message: S) -> Self {
         Self {
-            message: message.into(),
+            message: message.to_string(),
         }
     }
 }
@@ -202,12 +202,7 @@ where
     fn from(res: std::result::Result<T, E>) -> Self {
         let (data, error) = match res {
             Ok(t) => (encode(t).unwrap(), None),
-            Err(err) => (
-                ByteBuf::default(),
-                Some(CallError {
-                    message: err.to_string(),
-                }),
-            ),
+            Err(err) => (ByteBuf::default(), Some(CallError::from(err))),
         };
 
         Self { data, error }
