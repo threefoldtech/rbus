@@ -6,13 +6,14 @@ use anyhow::Result;
 use rbus::client;
 use rbus::protocol;
 
-use protocol::{ObjectID, Output, Request};
-use rbus::server::{self, interface, Object};
+use protocol::{ObjectID, Request};
+use rbus::server::{self, interface};
 
-#[interface(name = "calculator", version = "1.0")]
+#[interface(name = "calculator", version = "0.2")]
 pub trait Calculator {
     fn add(&self, a: f64, b: f64) -> Result<(f64, f64)>;
     fn divide(&self, a: f64, b: f64) -> Result<f64>;
+    fn multiply(&self, a: f64, b: f64) -> Result<f64>;
     async fn something(&self) -> Result<()>;
 }
 
@@ -29,6 +30,9 @@ impl Calculator for CalculatorImpl {
             bail!("cannot divide by zero")
         }
         Ok(a / b)
+    }
+    fn multiply(&self, a: f64, b: f64) -> Result<f64> {
+        Ok(a * b)
     }
     async fn something(&self) -> Result<()> {
         Ok(())
@@ -94,7 +98,6 @@ async fn main_() -> Result<()> {
     let pool = rbus::pool("redis://localhost:6379").await?;
 
     let calc = CalculatorObject::from(CalculatorImpl);
-
     let mut server = server::RedisServer::new(pool, "server", 3).await?;
     server.register(calc);
 

@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, AttributeArgs, Ident, ItemTrait, Lit, LitStr, Meta, NestedMeta, Path,
+    parse_macro_input, AttributeArgs, FnArg, Ident, ItemTrait, Lit, LitStr, Meta, NestedMeta, Path,
     TraitItem,
 };
 
@@ -18,6 +18,8 @@ pub fn interface(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
 
     let input = parse_macro_input!(input as ItemTrait);
+
+    println!("{:#?}", input);
     let name_id = &input.ident;
     let name = format!("{}", name_id);
     let name_mod = format_ident!("{}_mod", name_id);
@@ -43,7 +45,7 @@ pub fn interface(args: TokenStream, input: TokenStream) -> TokenStream {
     let branches = input
         .items
         .iter()
-        .filter(|item| matches!(item, TraitItem::Method(_)))
+        .filter(|item| matches!(item, TraitItem::Method(m) if m.sig.inputs.len() > 0 && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
         .map(|item| {
             if let TraitItem::Method(method) = item {
                 let name_id = &method.sig.ident;
