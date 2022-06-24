@@ -1,3 +1,28 @@
+# ZBUS
+[`zbus`](https://github.com/threefoldtech/zbus) implementation in rust (hence the name `rbus`). It ss a framework for `local` RPC calls. User of this protocol will enable separate processes to make rpc calls to each other without the knowledge of how to reach the other component directly or where it actually live on the system.
+
+This is accomplished by using redis as a message bus. But calls still need to know:
+- the module name
+- object identity
+- method names that are allowed to be called over the bus
+- exact arguments number and types
+- exact return type(s)
+
+```
+module(name) {
+    object(name, version) {
+        method[name](arguments ...) -> output
+    }
+    object(name, version) {
+        ...
+    }
+}
+
+Hence all implementers of this protocol usually provide tool set to generate both server and client stubs.
+
+While `rbus` provide you the tools to manually build server and client side stubs. It also provide you with a convenient macro to generate both server and client stubs
+
+```rust
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -97,3 +122,4 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+```

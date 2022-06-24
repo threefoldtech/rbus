@@ -1,159 +1,44 @@
-use crate::protocol::Container;
-use crate::protocol::{Arguments, ObjectID, Request, Response};
-use anyhow::Result;
+use crate::protocol::{Error, ObjectID, Output, Request, Result, Tuple};
 use async_trait::async_trait;
 use std::collections::HashMap;
-use std::future::Future;
 use thiserror::Error;
 
 pub mod redis;
-pub use self::redis::Server as RedisServer;
+pub use self::redis::Server;
 
-/// Server errors
-#[derive(Error, Debug)]
-pub enum ServerError {
-    #[error("unknown method '{0}'")]
-    UnknownMethod(String),
-}
-
+/// Object trait
 #[async_trait]
 pub trait Object {
+    /// return object id
     fn id(&self) -> ObjectID;
-    async fn dispatch(&self, request: Request) -> Response;
+    /// dispatch request and get an Output
+    async fn dispatch(&self, request: Request) -> Result<Output>;
 }
 
 /// Handlers must implement this trait
 #[async_trait]
 pub trait Handler {
-    async fn handle(&self, a: Arguments) -> Result<Arguments>;
+    async fn handle(&self, a: Tuple) -> Result<Output>;
 }
 
-/// Implements handler for functions
-pub struct SyncHandler<F, T>
-where
-    F: Fn(Arguments) -> Result<T>,
-{
-    f: F,
-}
-
-impl<F, T> SyncHandler<F, T>
-where
-    F: Fn(Arguments) -> Result<T>,
-{
-    pub fn from(f: F) -> Self {
-        SyncHandler { f }
-    }
-}
-
-macro_rules! to_arguments {
-    ($r:expr) => {{
-        let mut args = $crate::protocol::Arguments::new();
-        match $r {
-            Ok(v) => {
-                args.add(v)?;
-                args.add(Option::<$crate::protocol::Error>::None)?;
-            }
-            Err(err) => {
-                args.add(Option::<T>::None)?;
-                args.add(Some($crate::protocol::Error::new(err.to_string())))?;
-            }
-        }
-        args
-    }};
-}
-
-#[async_trait]
-impl<F, T> Handler for SyncHandler<F, T>
-where
-    F: Fn(Arguments) -> Result<T> + Send + Sync,
-    T: serde::Serialize,
-{
-    async fn handle(&self, a: Arguments) -> Result<Arguments> {
-        let result = (self.f)(a);
-        Ok(to_arguments!(result))
-    }
-}
-
-pub struct AsyncHandler<F, T, Fut>
-where
-    F: Fn(Arguments) -> Fut,
-    Fut: Future<Output = Result<T>> + Send + Sync,
-{
-    f: F,
-}
-
-impl<F, T, Fut> AsyncHandler<F, T, Fut>
-where
-    F: Fn(Arguments) -> Fut,
-    Fut: Future<Output = Result<T>> + Send + Sync,
-{
-    pub fn from(f: F) -> Self {
-        Self { f }
-    }
-}
-
-#[async_trait]
-impl<F, T, Fut> Handler for AsyncHandler<F, T, Fut>
-where
-    F: Fn(Arguments) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<T>> + Send + Sync,
-    T: serde::Serialize,
-{
-    async fn handle(&self, a: Arguments) -> Result<Arguments> {
-        let result = (self.f)(a).await;
-        Ok(to_arguments!(result))
-    }
-}
-
-pub struct AsyncHandlerWithState<F, T, Fut, S>
-where
-    F: Fn(S, Arguments) -> Fut,
-    Fut: Future<Output = Result<T>> + Send + Sync,
-    S: Clone + Send + Sync,
-{
-    s: S,
-    f: F,
-}
-
-impl<F, T, Fut, S> AsyncHandlerWithState<F, T, Fut, S>
-where
-    F: Fn(S, Arguments) -> Fut,
-    Fut: Future<Output = Result<T>> + Send + Sync,
-    S: Clone + Send + Sync,
-{
-    pub fn from(s: S, f: F) -> Self {
-        Self { s, f }
-    }
-}
-
-#[async_trait]
-impl<F, T, Fut, S> Handler for AsyncHandlerWithState<F, T, Fut, S>
-where
-    F: Fn(S, Arguments) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<T>> + Send + Sync,
-    S: Clone + Send + Sync,
-    T: serde::Serialize,
-{
-    async fn handle(&self, a: Arguments) -> Result<Arguments> {
-        let result = (self.f)(self.s.clone(), a).await;
-        Ok(to_arguments!(result))
-    }
-}
-
-pub struct Router {
+/// SimpleObject implements Object trait
+/// usually you would never need to use this. Instead use
+/// the `object` macro on a trait to generate Dispatchers and Stubs
+/// for that interface.
+pub struct SimpleObject {
     o: ObjectID,
     handlers: HashMap<String, Box<dyn Handler + Sync + Send>>,
 }
 
-impl Router {
-    pub fn new(id: ObjectID) -> Router {
-        Router {
+impl SimpleObject {
+    pub fn new(id: ObjectID) -> SimpleObject {
+        SimpleObject {
             o: id,
             handlers: HashMap::new(),
         }
     }
 
-    pub fn handle<S, H>(mut self, m: S, h: H) -> Router
+    pub fn handle<S, H>(mut self, m: S, h: H) -> SimpleObject
     where
         S: Into<String>,
         H: Handler + Send + Sync + 'static,
@@ -164,32 +49,17 @@ impl Router {
 }
 
 #[async_trait]
-impl Object for Router {
+impl Object for SimpleObject {
     fn id(&self) -> ObjectID {
         self.o.clone()
     }
 
-    async fn dispatch(&self, request: Request) -> Response {
+    async fn dispatch(&self, request: Request) -> Result<Output> {
         let handler = match self.handlers.get(&request.method) {
             Some(handler) => handler,
-            None => {
-                return Response {
-                    id: request.id,
-                    arguments: Arguments::new(),
-                    error: Some(format!("{}", ServerError::UnknownMethod(request.method))),
-                }
-            }
+            None => return Err(Error::UnknownMethod(request.method)),
         };
 
-        let (args, err) = match handler.handle(request.arguments).await {
-            Ok(args) => (args, None),
-            Err(err) => (Arguments::new(), Some(format!("{}", err))),
-        };
-
-        Response {
-            id: request.reply_to,
-            arguments: args,
-            error: err,
-        }
+        handler.handle(request.inputs).await
     }
 }

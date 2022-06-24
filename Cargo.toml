@@ -5,12 +5,17 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[workspace]
+members = [
+    "rbus_macros",
+]
+
 [lib]
 path = "src/lib.rs"
 
 [[bin]]
 name = "rbus"
-path = "src/examples.rs"
+path = "tests/examples.rs"
 
 [dependencies]
 base64 = "0.13"
@@ -27,3 +32,8 @@ log = "0.4"
 simple_logger = "1.15.0"
 workers = { git = "https://github.com/threefoldtech/tokio-worker-pool", branch = "main"}
 bb8-redis = "0.11.0"
+macros = { path = "rbus_macros", optional=true }
+
+[features]
+default = ["macros"]
+macros = ["dep:macros"]

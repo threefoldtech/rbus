@@ -1,10 +1,43 @@
-use anyhow::{Context, Result};
 use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
 use rmp_serde::Serializer;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_bytes::ByteBuf;
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 
+#[derive(Debug, Serialize, Deserialize, thiserror::Error)]
+#[error("{message}")]
+pub struct CallError {
+    #[serde(rename = "Message")]
+    pub message: String,
+}
+
+impl CallError {
+    fn from<S: Display>(message: S) -> Self {
+        Self {
+            message: message.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("unknown object '{0}'")]
+    UnknownObject(String),
+    #[error("unknown method '{0}'")]
+    UnknownMethod(String),
+    #[error("no argument found at index {0}")]
+    ArgumentOutOfRange(usize),
+    #[error("protocol error: {0}")]
+    Protocol(String),
+    #[error("encoding error: {0}")]
+    Encoding(String),
+    #[error("remote call failed with error '{0}'")]
+    Call(CallError),
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Object id
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ObjectID {
     #[serde(rename = "Name")]
@@ -34,135 +67,60 @@ impl Display for ObjectID {
     }
 }
 
-pub trait Container {
-    fn decode<'a, T>(&'a self, i: usize) -> Result<T>
-    where
-        T: Deserialize<'a>;
-    fn add<T>(&mut self, o: T) -> Result<()>
-    where
-        T: Serialize;
+fn encode<T: Serialize>(o: T) -> Result<ByteBuf> {
+    let mut buffer: Vec<u8> = Vec::new();
+
+    let encoder = Serializer::new(&mut buffer);
+    let mut encoder = encoder.with_struct_map();
+    o.serialize(&mut encoder)
+        .map_err(|e| Error::Encoding(e.to_string()))?;
+
+    Ok(ByteBuf::from(buffer))
 }
 
-pub type Arguments = Vec<serde_bytes::ByteBuf>;
+/// Tuple is a list of arguments
+#[derive(Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Tuple(Vec<serde_bytes::ByteBuf>);
 
-impl Container for Arguments {
-    fn decode<'a, T>(&'a self, i: usize) -> Result<T>
+impl Tuple {
+    pub fn at<'a, T>(&'a self, i: usize) -> Result<T>
     where
         T: Deserialize<'a>,
     {
-        Ok(rmp_serde::decode::from_read_ref(&self[i])?)
+        if i >= self.0.len() {
+            return Err(Error::ArgumentOutOfRange(i));
+        }
+
+        rmp_serde::decode::from_read_ref(&self.0[i]).map_err(|e| Error::Encoding(e.to_string()))
     }
-    fn add<T>(&mut self, o: T) -> Result<()>
+
+    pub fn add<T>(&mut self, o: T) -> Result<()>
     where
         T: Serialize,
     {
-        let mut buffer: Vec<u8> = Vec::new();
-
-        let encoder = Serializer::new(&mut buffer);
-        let mut encoder = encoder.with_struct_map();
-        o.serialize(&mut encoder)
-            .context("failed to encode argument")?;
-
-        self.push(ByteBuf::from(buffer));
+        self.0.push(encode(o)?);
         Ok(())
     }
-}
 
-#[macro_export]
-macro_rules! returns {
-    ($($i:expr),*) => {{
-        use $crate::protocol::{Arguments, Container};
-        let mut args = Arguments::new();
-
-        $(args.add($i).unwrap();)*
-        args
-    }};
-}
-
-#[macro_export]
-macro_rules! inputs {
-    ($i:expr, $t:ty) => {
-        {
-            use $crate::protocol::{Values};
-            use anyhow::Result;
-            let t: Result<($t,)> = $i.values();
-            t.map(|v| v.0)
-        }
-    };
-    ($i:expr, $($t:ty),+) => {{
-        use $crate::protocol::{Values};
-        use anyhow::Result;
-        let t: Result<($($t),+)> = $i.values();
-        t
-    }};
-
-}
-
-pub use inputs;
-pub use returns;
-
-pub trait Values<'a, T> {
-    fn values(&'a self) -> Result<T>;
-}
-
-impl<'a, A> Values<'a, (A,)> for Arguments
-where
-    A: Deserialize<'a>,
-{
-    fn values(&'a self) -> Result<(A,)> {
-        let a: A = self.decode(0)?;
-        Ok((a,))
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 }
 
-impl<'a, A, B> Values<'a, (A, B)> for Arguments
-where
-    A: Deserialize<'a>,
-    B: Deserialize<'a>,
-{
-    fn values(&'a self) -> Result<(A, B)> {
-        let a: A = self.decode(0)?;
-        let b: B = self.decode(1)?;
-        Ok((a, b))
+impl Debug for Tuple {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(f, "Arguments(len: {})", self.0.len())
     }
 }
 
-impl<'a, A, B, C> Values<'a, (A, B, C)> for Arguments
-where
-    A: Deserialize<'a>,
-    B: Deserialize<'a>,
-    C: Deserialize<'a>,
-{
-    fn values(&'a self) -> Result<(A, B, C)> {
-        let a: A = self.decode(0)?;
-        let b: B = self.decode(1)?;
-        let c: C = self.decode(2)?;
-        Ok((a, b, c))
-    }
-}
-
-impl<'a, A, B, C, D> Values<'a, (A, B, C, D)> for Arguments
-where
-    A: Deserialize<'a>,
-    B: Deserialize<'a>,
-    C: Deserialize<'a>,
-    D: Deserialize<'a>,
-{
-    fn values(&'a self) -> Result<(A, B, C, D)> {
-        let a: A = self.decode(0)?;
-        let b: B = self.decode(1)?;
-        let c: C = self.decode(2)?;
-        let d: D = self.decode(3)?;
-        Ok((a, b, c, d))
-    }
-}
-
+/// rbus request
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Request {
     #[serde(rename = "ID")]
     pub id: String,
-    #[serde(rename = "Arguments")]
-    pub arguments: Arguments,
+    #[serde(rename = "Inputs")]
+    pub inputs: Tuple,
     #[serde(rename = "Object")]
     pub object: ObjectID,
     #[serde(rename = "ReplyTo")]
@@ -172,6 +130,7 @@ pub struct Request {
 }
 
 impl Request {
+    /// create a new request on specific object id, and method name
     pub fn new<S: Into<String>>(object: ObjectID, method: S) -> Request {
         let id = uuid::Uuid::new_v4().to_string();
         // generate a new ID
@@ -179,16 +138,18 @@ impl Request {
             object,
             id: id.clone(),
             method: method.into(),
-            arguments: vec![],
+            inputs: Tuple::default(),
             reply_to: id,
         }
     }
 
+    /// add an call argument to the request. The number and types
+    /// of arguments added must match the expected type in server implementation
     pub fn arg<T>(mut self, argument: T) -> Result<Self>
     where
         T: Serialize,
     {
-        self.arguments.add(argument)?;
+        self.inputs.add(argument)?;
         Ok(self)
     }
 }
@@ -231,20 +192,53 @@ impl ToRedisArgs for Request {
     }
 }
 
+/// Output from a call
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct Output {
+    #[serde(rename = "Data")]
+    pub data: serde_bytes::ByteBuf,
+    #[serde(rename = "Error")]
+    pub error: Option<CallError>,
+}
+
+impl<T, E> From<std::result::Result<T, E>> for Output
+where
+    T: Serialize,
+    E: Display,
+{
+    fn from(res: std::result::Result<T, E>) -> Self {
+        let (data, error) = match res {
+            Ok(t) => (encode(t).unwrap(), None),
+            Err(err) => (ByteBuf::default(), Some(CallError::from(err))),
+        };
+
+        Self { data, error }
+    }
+}
+
+impl<T> From<Output> for Result<T>
+where
+    T: DeserializeOwned,
+{
+    fn from(out: Output) -> Self {
+        if let Some(err) = out.error {
+            return Err(Error::Call(err));
+        }
+
+        log::debug!("load type {}", std::any::type_name::<T>());
+        rmp_serde::decode::from_read_ref(&out.data).map_err(|e| Error::Encoding(e.to_string()))
+    }
+}
+
+/// Response returned from a request
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Response {
     #[serde(rename = "ID")]
     pub id: String,
-    #[serde(rename = "Arguments")]
-    pub arguments: Arguments,
+    #[serde(rename = "Output")]
+    pub output: Output,
     #[serde(rename = "Error")]
     pub error: Option<String>,
-}
-
-impl Response {
-    pub fn is_error(&self) -> bool {
-        matches!(&self.error, Some(e) if !e.is_empty())
-    }
 }
 
 impl FromRedisValue for Response {
@@ -282,40 +276,5 @@ impl ToRedisArgs for Response {
             .expect("failed to encode response");
 
         out.write_arg(&buffer);
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, thiserror::Error)]
-#[error("{}", message)]
-pub struct Error {
-    #[serde(rename = "Message")]
-    pub message: String,
-}
-
-impl Error {
-    pub fn new<S: Into<String>>(message: S) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn returns() {
-        //let x = 1;
-        let args = returns!(1, 2, 3);
-        assert_eq!(args.len(), 3);
-    }
-    #[test]
-    fn inputs() {
-        let args = returns!(1, 2, 3);
-        assert_eq!(args.len(), 3);
-
-        let (a, b, c) = inputs!(args, i64, i64, i64).unwrap();
-        assert_eq!(a, 1);
-        assert_eq!(b, 2);
-        assert_eq!(c, 3);
     }
 }
