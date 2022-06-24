@@ -235,7 +235,7 @@ pub fn interface(args: TokenStream, input: TokenStream) -> TokenStream {
                 T: #name_id + Send + Sync + 'static,
             {
                 fn id(&self) -> protocol::ObjectID {
-                    ObjectID::new(#name_lit, #version_lit)
+                    protocol::ObjectID::new(#name_lit, #version_lit)
                 }
 
                 async fn dispatch(&self, request: protocol::Request) -> protocol::Result<protocol::Output> {

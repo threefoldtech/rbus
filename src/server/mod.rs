@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 pub mod redis;
-pub use self::redis::Server as RedisServer;
+pub use self::redis::Server;
 
 /// Server errors
 #[derive(Error, Debug)]
@@ -63,6 +63,3 @@ impl Object for Router {
         handler.handle(request.inputs).await
     }
 }
-
-#[cfg(feature = "macros")]
-pub use macros::interface;
