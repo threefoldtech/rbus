@@ -10,87 +10,6 @@ fn path_ident<'a>(path: &'a Path) -> Option<&'a Ident> {
     path.segments.first().map(|s| &s.ident)
 }
 
-// Type(
-//     RArrow,
-//     Path(
-//         TypePath {
-//             qself: None,
-//             path: Path {
-//                 leading_colon: None,
-//                 segments: [
-//                     PathSegment {
-//                         ident: Ident {
-//                             ident: "anyhow",
-//                             span: #0 bytes(279..285),
-//                         },
-//                         arguments: None,
-//                     },
-//                     Colon2,
-//                     PathSegment {
-//                         ident: Ident {
-//                             ident: "Result",
-//                             span: #0 bytes(287..293),
-//                         },
-//                         arguments: AngleBracketed(
-//                             AngleBracketedGenericArguments {
-//                                 colon2_token: None,
-//                                 lt_token: Lt,
-//                                 args: [
-//                                     Type(
-//                                         Tuple(
-//                                             TypeTuple {
-//                                                 paren_token: Paren,
-//                                                 elems: [
-//                                                     Path(
-//                                                         TypePath {
-//                                                             qself: None,
-//                                                             path: Path {
-//                                                                 leading_colon: None,
-//                                                                 segments: [
-//                                                                     PathSegment {
-//                                                                         ident: Ident {
-//                                                                             ident: "f64",
-//                                                                             span: #0 bytes(295..298),
-//                                                                         },
-//                                                                         arguments: None,
-//                                                                     },
-//                                                                 ],
-//                                                             },
-//                                                         },
-//                                                     ),
-//                                                     Comma,
-//                                                     Path(
-//                                                         TypePath {
-//                                                             qself: None,
-//                                                             path: Path {
-//                                                                 leading_colon: None,
-//                                                                 segments: [
-//                                                                     PathSegment {
-//                                                                         ident: Ident {
-//                                                                             ident: "f64",
-//                                                                             span: #0 bytes(300..303),
-//                                                                         },
-//                                                                         arguments: None,
-//                                                                     },
-//                                                                 ],
-//                                                             },
-//                                                         },
-//                                                     ),
-//                                                 ],
-//                                             },
-//                                         ),
-//                                     ),
-//                                 ],
-//                                 gt_token: Gt,
-//                             },
-//                         ),
-//                     },
-//                 ],
-//             },
-//         },
-//     ),
-// )
-
 fn return_inner_type(
     ty: &ReturnType,
 ) -> Result<&Punctuated<GenericArgument, syn::token::Comma>, &'static str> {
@@ -109,8 +28,36 @@ fn return_inner_type(
     Err("all interface method must return Result<T>")
 }
 
+/// annotate the service trait with `object` this will
+/// generate a usable server and client stubs.
+/// it accepts
+/// - name [optional] default to trait name
+/// - version [optional] default to 1.0
+///
+/// NOTE:
+/// - only trait methods with first argument as receiver will be available for RPC
+/// - receiver must be a shared ref to self (&self)
+/// - all input arguments must be of type <T: Serialize>
+/// - return must be a Result (any Result) as long as the E type can be stringfied <E: Display>
+///
+/// Once a trait is marked as Object, two extra structures will be available in the same scope as the
+/// annotated trait.
+///
+/// `struct [Name]Object;`
+/// `struct [Name]Stub;`
+///
+/// where [Name] is replaced by actual trait name
+///
+/// The generated Object is a wrapper that can be used on top of any of the trait implementation
+/// that takes care of call dispatching and serialization/deserialization of inputs/outputs
+///
+/// `let obj = [Name]Object::from(traitImpl);`
+///
+/// the generated Stub is a wrapper on top of the rbus::Client to abstract calls to remote service
+///
+/// `let stub = [Name]Stub::new("module", client);`
 #[proc_macro_attribute]
-pub fn interface(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
 
     let input = parse_macro_input!(input as ItemTrait);
@@ -191,7 +138,6 @@ pub fn interface(args: TokenStream, input: TokenStream) -> TokenStream {
                }
                unreachable!();
             });
-            println!("{:#?}", method.sig.output);
             let ret = return_inner_type(&method.sig.output).unwrap();
             return quote!{
                 pub async fn #name(&self, #(#inputs,)*) -> protocol::Result<#ret> {

@@ -37,6 +37,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Object id
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ObjectID {
     #[serde(rename = "Name")]
@@ -77,6 +78,7 @@ fn encode<T: Serialize>(o: T) -> Result<ByteBuf> {
     Ok(ByteBuf::from(buffer))
 }
 
+/// Tuple is a list of arguments
 #[derive(Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Tuple(Vec<serde_bytes::ByteBuf>);
@@ -112,6 +114,7 @@ impl Debug for Tuple {
     }
 }
 
+/// rbus request
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Request {
     #[serde(rename = "ID")]
@@ -127,6 +130,7 @@ pub struct Request {
 }
 
 impl Request {
+    /// create a new request on specific object id, and method name
     pub fn new<S: Into<String>>(object: ObjectID, method: S) -> Request {
         let id = uuid::Uuid::new_v4().to_string();
         // generate a new ID
@@ -139,6 +143,8 @@ impl Request {
         }
     }
 
+    /// add an call argument to the request. The number and types
+    /// of arguments added must match the expected type in server implementation
     pub fn arg<T>(mut self, argument: T) -> Result<Self>
     where
         T: Serialize,
@@ -186,6 +192,7 @@ impl ToRedisArgs for Request {
     }
 }
 
+/// Output from a call
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Output {
     #[serde(rename = "Data")]
@@ -223,6 +230,7 @@ where
     }
 }
 
+/// Response returned from a request
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Response {
     #[serde(rename = "ID")]

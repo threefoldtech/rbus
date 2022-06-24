@@ -6,16 +6,12 @@ use thiserror::Error;
 pub mod redis;
 pub use self::redis::Server;
 
-/// Server errors
-#[derive(Error, Debug)]
-pub enum ServerError {
-    #[error("unknown method '{0}'")]
-    UnknownMethod(String),
-}
-
+/// Object trait
 #[async_trait]
 pub trait Object {
+    /// return object id
     fn id(&self) -> ObjectID;
+    /// dispatch request and get an Output
     async fn dispatch(&self, request: Request) -> Result<Output>;
 }
 
@@ -25,20 +21,24 @@ pub trait Handler {
     async fn handle(&self, a: Tuple) -> Result<Output>;
 }
 
-pub struct Router {
+/// SimpleObject implements Object trait
+/// usually you would never need to use this. Instead use
+/// the `object` macro on a trait to generate Dispatchers and Stubs
+/// for that interface.
+pub struct SimpleObject {
     o: ObjectID,
     handlers: HashMap<String, Box<dyn Handler + Sync + Send>>,
 }
 
-impl Router {
-    pub fn new(id: ObjectID) -> Router {
-        Router {
+impl SimpleObject {
+    pub fn new(id: ObjectID) -> SimpleObject {
+        SimpleObject {
             o: id,
             handlers: HashMap::new(),
         }
     }
 
-    pub fn handle<S, H>(mut self, m: S, h: H) -> Router
+    pub fn handle<S, H>(mut self, m: S, h: H) -> SimpleObject
     where
         S: Into<String>,
         H: Handler + Send + Sync + 'static,
@@ -49,7 +49,7 @@ impl Router {
 }
 
 #[async_trait]
-impl Object for Router {
+impl Object for SimpleObject {
     fn id(&self) -> ObjectID {
         self.o.clone()
     }

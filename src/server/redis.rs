@@ -10,13 +10,20 @@ use tokio::time::{sleep, Duration};
 const PULL_TIMEOUT: usize = 10;
 const RESPONSE_TTL: usize = 5 * 60;
 
-type Routers = HashMap<String, Box<dyn Object + Send + Sync>>;
+type Objects = HashMap<String, Box<dyn Object + Send + Sync>>;
 
+/// Server module. for each module there should be
+/// only one instance of this server running. Each module
+/// can has multiple registered objects.
+///
+/// Number of workers specifies how many function calls a server
+/// can make at the same time. This can be set to one for workloads
+/// that need exclusive access to a certain resource.
 pub struct Server {
     module: String,
     pool: Pool<RedisConnectionManager>,
     workers: usize,
-    objects: Routers,
+    objects: Objects,
 }
 
 impl Server {
@@ -34,18 +41,31 @@ impl Server {
             pool,
             workers,
             module: module.as_ref().into(),
-            objects: Routers::new(),
+            objects: Objects::new(),
         })
     }
 
-    pub fn register<T>(&mut self, service: T)
+    /// register an object on this module. once
+    /// registered, calls designated to this object
+    /// will be dispatched to the object dispatch method
+    ///
+    /// it's up to the object implementation to execute the
+    /// requested function.
+    ///
+    /// You can configure an instance of SimpleObject that
+    /// implements the required functionality. Or better
+    /// use the `object` macro to generate dispatcher and client
+    /// stubs for that given interface.
+    pub fn register<T>(&mut self, object: T)
     where
         T: Object + Send + Sync + 'static,
     {
         self.objects
-            .insert(service.id().to_string(), Box::new(service));
+            .insert(object.id().to_string(), Box::new(object));
     }
 
+    /// start the server. blocks forever. you can spawn it as a separate
+    /// task to avoid blocking of the main thread.
     pub async fn run(self) {
         // routers can not be changed afterwords. so we need to spawn workers here
         // and pass them a copy of the routers, and a way for them to pull for messages.
@@ -96,12 +116,12 @@ impl Server {
 
 #[derive(Clone)]
 struct Worker {
-    routers: Arc<Routers>,
+    routers: Arc<Objects>,
     pool: Pool<RedisConnectionManager>,
 }
 
 impl Worker {
-    fn new(pool: Pool<RedisConnectionManager>, routers: Routers) -> Self {
+    fn new(pool: Pool<RedisConnectionManager>, routers: Objects) -> Self {
         Self {
             pool,
             routers: Arc::new(routers),

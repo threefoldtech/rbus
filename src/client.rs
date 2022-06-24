@@ -2,17 +2,22 @@ use crate::protocol::{Error, Output, Request, Response, Result};
 use bb8_redis::{bb8::Pool, RedisConnectionManager};
 use redis::AsyncCommands;
 
+/// raw rbus client object.
+/// Usually you would wrap this client in a stub to use more
+/// abstract functions.
 #[derive(Clone)]
 pub struct Client {
     pool: Pool<RedisConnectionManager>,
 }
 
 impl Client {
+    /// create a new instance of the client
     pub fn new(pool: Pool<RedisConnectionManager>) -> Client {
         Self { pool }
     }
 
-    // a new version with cancellation context need to be implemented
+    /// make a request, and wait for response Output
+    /// TODO: a request function with deadline.
     pub async fn request<S>(&mut self, module: S, request: Request) -> Result<Output>
     where
         S: AsRef<str>,
