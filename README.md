@@ -17,6 +17,7 @@ module(name) {
         ...
     }
 }
+```
 
 Hence all implementers of this protocol usually provide tool set to generate both server and client stubs.
 
@@ -123,3 +124,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+> The data types and the protocol is fully compatible with the Go implementation except for the method names. because rust uses snake_case convention but go use CamelCase, right now rpc across rust and go will return method not found error. Currently the only workaround for this is to change the cases.
+
+> It's planned to support a `rename` attribute for rust to be able to rename the method during the call without changing the naming convention for rust.
