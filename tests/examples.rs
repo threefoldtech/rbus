@@ -11,7 +11,7 @@ use rbus::server::{self, interface};
 
 #[interface(name = "calculator", version = "0.2")]
 pub trait Calculator {
-    fn add(&self, a: f64, b: f64) -> Result<(f64, f64)>;
+    fn add(&self, a: f64, b: f64) -> anyhow::Result<(f64, f64)>;
     fn divide(&self, a: f64, b: f64) -> Result<f64>;
     fn multiply(&self, a: f64, b: f64) -> Result<f64>;
     async fn something(&self) -> Result<()>;
@@ -36,47 +36,6 @@ impl Calculator for CalculatorImpl {
     }
     async fn something(&self) -> Result<()> {
         Ok(())
-    }
-}
-
-struct CalculatorStub {
-    client: client::Client,
-    object: protocol::ObjectID,
-}
-
-impl CalculatorStub {
-    fn new(client: client::Client) -> CalculatorStub {
-        CalculatorStub {
-            client,
-            object: ObjectID::new("calculator", "1.0"),
-        }
-    }
-
-    async fn add(&self, a: f64, b: f64) -> protocol::Result<f64> {
-        let req = Request::new(self.object.clone(), "Add").arg(a)?.arg(b)?;
-
-        let mut client = self.client.clone();
-        let out = client.request("server", req).await?;
-
-        out.into()
-    }
-
-    async fn add_sub(&self, a: f64, b: f64) -> protocol::Result<(f64, f64)> {
-        let req = Request::new(self.object.clone(), "AddSub").arg(a)?.arg(b)?;
-
-        let mut client = self.client.clone();
-        let out = client.request("server", req).await?;
-
-        out.into()
-    }
-
-    async fn divide(&self, a: f64, b: f64) -> protocol::Result<f64> {
-        let req = Request::new(self.object.clone(), "Divide").arg(a)?.arg(b)?;
-
-        let mut client = self.client.clone();
-        let out = client.request("server", req).await?;
-        log::debug!("got output: {:?}", out);
-        out.into()
     }
 }
 
@@ -126,12 +85,12 @@ async fn main() -> Result<()> {
 
     let client = client::Client::new(pool);
 
-    let calc = CalculatorStub::new(client);
+    let calc = CalculatorStub::new("server", client);
 
     println!("making calls");
     println!("add(1,2) => {:?}", calc.add(1f64, 2f64).await);
-    println!("add_sub(1,2) => {:?}", calc.add_sub(1f64, 2f64).await);
-    println!("divide(1,2) => {:?}", calc.divide(10f64, 3f64).await);
+    println!("divide(10,3) => {:?}", calc.divide(10f64, 3f64).await);
+    println!("divide(10,0) => {:?}", calc.divide(10f64, 0f64).await);
     // println!("divide(1,0) => {:?}", calc.divide(1f64, 0f64).await);
 
     Ok(())
