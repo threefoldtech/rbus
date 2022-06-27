@@ -136,7 +136,7 @@ impl Worker {
         let response = match ret {
             Ok(output) => Response {
                 id: id.clone(),
-                output: output,
+                output,
                 error: None,
             },
             Err(err) => Response {

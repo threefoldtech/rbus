@@ -1,9 +1,9 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    parse_macro_input, punctuated::Punctuated, AttributeArgs, FnArg, GenericArgument, Ident,
-    ItemTrait, Lit, LitStr, Meta, NestedMeta, Pat, Path, PathArguments, ReturnType, TraitItem,
-    TraitItemMethod, Type,
+    parse_macro_input, punctuated::Punctuated, AttributeArgs, FnArg, GenericArgument, ItemTrait,
+    Lit, LitStr, Meta, NestedMeta, Pat, PathArguments, ReturnType, TraitItem, TraitItemMethod,
+    Type,
 };
 
 fn return_inner_type(
@@ -44,7 +44,7 @@ fn method_name(m: &TraitItemMethod) -> String {
                 .first()
                 .expect("rename requires single string literal");
             if let NestedMeta::Lit(Lit::Str(st)) = meta {
-                return format!("{}", st.value());
+                return st.value();
             }
         }
     }
@@ -121,7 +121,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let dispatches = input
         .items
         .iter()
-        .filter(|item| matches!(item, TraitItem::Method(m) if m.sig.inputs.len() > 0 && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
+        .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
         .map(|item| {
             if let TraitItem::Method(method) = item {
                 let name_id = &method.sig.ident;
@@ -156,7 +156,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let stub_calls = input
     .items
     .iter()
-    .filter(|item| matches!(item, TraitItem::Method(m) if m.sig.inputs.len() > 0 && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
+    .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
     .map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;

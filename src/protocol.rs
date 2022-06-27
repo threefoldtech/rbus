@@ -102,10 +102,6 @@ impl Tuple {
         self.0.push(encode(o)?);
         Ok(())
     }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
 }
 
 impl Debug for Tuple {
@@ -276,5 +272,36 @@ impl ToRedisArgs for Response {
             .expect("failed to encode response");
 
         out.write_arg(&buffer);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn tuple() {
+        let mut tuple = Tuple::default();
+        tuple.add(10).unwrap();
+        tuple.add("hello world").unwrap();
+        tuple.add(("some", "data")).unwrap();
+
+        tuple.at::<i32>(0).unwrap();
+        tuple.at::<String>(1).unwrap();
+        tuple.at::<(String, String)>(2).unwrap();
+    }
+
+    #[test]
+    fn output() {
+        type Result<T> = std::result::Result<T, &'static str>;
+        let out: Output = Result::Ok(10).into();
+        assert!(out.error.is_none());
+
+        let out: Output = Result::<()>::Err("some call test").into();
+        assert!(out.error.is_some());
+        assert!(matches!(
+            out.error,
+            Some(err) if err.message == "some call test"
+        ));
     }
 }

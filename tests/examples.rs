@@ -63,38 +63,33 @@ impl Calculator for CalculatorImpl {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    simple_logger::SimpleLogger::new()
-        .with_level(log::LevelFilter::Debug)
-        .init()
-        .unwrap();
+#[tokio::test]
+async fn full() {
+    let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
-    let pool = rbus::pool("redis://localhost:6379").await?;
+    const MODULE: &str = "full-test";
+    // build the object dispatcher
+    let calc = CalculatorObject::from(CalculatorImpl);
+    // create the module (server)
+    let mut server = rbus::Server::new(pool.clone(), MODULE, 3).await.unwrap();
+    // register the object
+    server.register(calc);
 
-    let server = true;
-    if server {
-        // build the object dispatcher
-        let calc = CalculatorObject::from(CalculatorImpl);
-        // create the module (server)
-        let mut server = rbus::Server::new(pool, "server", 3).await?;
-        // register the object
-        server.register(calc);
+    println!("running server");
+    tokio::spawn(server.run());
 
-        println!("running server");
-        server.run().await;
-    } else {
-        let client = rbus::Client::new(pool);
+    let client = rbus::Client::new(pool);
 
-        // same as CalculatorObject, the CalculatorStub is auto generated in
-        // this scope. Not the
-        let calc = CalculatorStub::new("server", client);
+    // same as CalculatorObject, the CalculatorStub is auto generated in
+    // this scope. Not the
+    let calc = CalculatorStub::new(MODULE, client);
 
-        println!("making calls");
-        println!("add(1,2) => {:?}", calc.add(1f64, 2f64).await);
-        println!("divide(10,3) => {:?}", calc.divide(10f64, 3f64).await);
-        println!("divide(10,0) => {:?}", calc.divide(10f64, 0f64).await);
-    }
+    assert_eq!((3f64, -1f64), calc.add(1f64, 2f64).await.unwrap());
+    assert_eq!(5f64, calc.divide(10f64, 2f64).await.unwrap());
 
-    Ok(())
+    use rbus::protocol::Error;
+
+    assert!(matches!(
+        calc.divide(10f64, 0f64).await,
+        Err(Error::Call(err)) if err.message == "cannot divide by zero"));
 }
