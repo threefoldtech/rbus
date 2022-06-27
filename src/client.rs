@@ -1,6 +1,5 @@
 use crate::protocol::{Error, Output, Request, Response, Result};
-use bb8_redis::{bb8::Pool, RedisConnectionManager};
-use redis::AsyncCommands;
+use bb8_redis::{bb8::Pool, redis::AsyncCommands, RedisConnectionManager};
 
 /// raw rbus client object.
 /// Usually you would wrap this client in a stub to use more

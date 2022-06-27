@@ -1,4 +1,6 @@
-use redis::{FromRedisValue, RedisResult, ToRedisArgs, Value};
+use bb8_redis::redis::{
+    ErrorKind, FromRedisValue, RedisError, RedisResult, RedisWrite, ToRedisArgs, Value,
+};
 use rmp_serde::Serializer;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_bytes::ByteBuf;
@@ -155,16 +157,16 @@ impl FromRedisValue for Request {
         let bytes = match v {
             Value::Data(bytes) => bytes,
             _ => {
-                return Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                return Err(RedisError::from((
+                    ErrorKind::TypeError,
                     "expecting binary data",
                 )))
             }
         };
 
         rmp_serde::decode::from_read_ref(bytes).map_err(|err| {
-            redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+            RedisError::from((
+                ErrorKind::TypeError,
                 "failed to decode request",
                 err.to_string(),
             ))
@@ -175,7 +177,7 @@ impl FromRedisValue for Request {
 impl ToRedisArgs for Request {
     fn write_redis_args<W>(&self, out: &mut W)
     where
-        W: ?Sized + redis::RedisWrite,
+        W: ?Sized + RedisWrite,
     {
         let mut buffer: Vec<u8> = Vec::new();
 
@@ -242,16 +244,16 @@ impl FromRedisValue for Response {
         let bytes = match v {
             Value::Data(bytes) => bytes,
             _ => {
-                return Err(redis::RedisError::from((
-                    redis::ErrorKind::TypeError,
+                return Err(RedisError::from((
+                    ErrorKind::TypeError,
                     "expecting binary data",
                 )))
             }
         };
 
         rmp_serde::decode::from_read_ref(bytes).map_err(|err| {
-            redis::RedisError::from((
-                redis::ErrorKind::TypeError,
+            RedisError::from((
+                ErrorKind::TypeError,
                 "failed to decode request",
                 err.to_string(),
             ))
@@ -262,7 +264,7 @@ impl FromRedisValue for Response {
 impl ToRedisArgs for Response {
     fn write_redis_args<W>(&self, out: &mut W)
     where
-        W: ?Sized + redis::RedisWrite,
+        W: ?Sized + RedisWrite,
     {
         let mut buffer: Vec<u8> = Vec::new();
 

@@ -1,8 +1,7 @@
 use super::Object;
 use super::{Error, Result};
 use crate::protocol::{Output, Request, Response};
-use bb8_redis::{bb8::Pool, RedisConnectionManager};
-use redis::AsyncCommands;
+use bb8_redis::{bb8::Pool, redis::AsyncCommands, RedisConnectionManager};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};

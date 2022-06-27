@@ -25,10 +25,9 @@ jobs:
         uses: supercharge/redis-github-action@1.4.0
 
       - uses: actions-rs/cargo@v1
-        name: Run tests (ahm!)
+        name: Run tests
         with:
           command: test
-          args: --verbose -- --test-threads=1
       - uses: actions-rs/cargo@v1
         name: Run clippy
         with:
