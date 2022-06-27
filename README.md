@@ -54,6 +54,11 @@ pub struct Data {
 pub trait Calculator {
     // input and outputs can be anything according to the rules above
     fn add(&self, a: f64, b: f64) -> anyhow::Result<(f64, f64)>;
+
+    // to be able to do calls across languages, you can rename
+    // the method (over wire) to be able to call methods in Golang
+    // for example
+    #[rename("Divide")]
     fn divide(&self, a: f64, b: f64) -> Result<f64>;
     fn multiply(&self, a: f64, b: f64) -> Result<f64>;
 
@@ -124,7 +129,3 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
-
-> The data types and the protocol is fully compatible with the Go implementation except for the method names. because rust uses snake_case convention but go use CamelCase, right now rpc across rust and go will return method not found error. Currently the only workaround for this is to change the cases.
-
-> It's planned to support a `rename` attribute for rust to be able to rename the method during the call without changing the naming convention for rust.

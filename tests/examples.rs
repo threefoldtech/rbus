@@ -24,10 +24,11 @@ pub struct Data {
 // - all input arguments must be of type <T: Serialize>
 // - return must be a Result (any Result) as long as the E type can be stringfied <E: Display>
 // please check docs for `object` for more details
-#[object(name = "calculator", version = "0.2")]
+#[object(name = "calculator", version = "1.0")]
 pub trait Calculator {
     // input and outputs can be anything according to the rules above
     fn add(&self, a: f64, b: f64) -> anyhow::Result<(f64, f64)>;
+    #[rename("Divide")]
     fn divide(&self, a: f64, b: f64) -> Result<f64>;
     fn multiply(&self, a: f64, b: f64) -> Result<f64>;
 

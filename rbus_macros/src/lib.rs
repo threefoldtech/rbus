@@ -3,12 +3,8 @@ use quote::{format_ident, quote};
 use syn::{
     parse_macro_input, punctuated::Punctuated, AttributeArgs, FnArg, GenericArgument, Ident,
     ItemTrait, Lit, LitStr, Meta, NestedMeta, Pat, Path, PathArguments, ReturnType, TraitItem,
-    Type,
+    TraitItemMethod, Type,
 };
-
-fn path_ident<'a>(path: &'a Path) -> Option<&'a Ident> {
-    path.segments.first().map(|s| &s.ident)
-}
 
 fn return_inner_type(
     ty: &ReturnType,
@@ -28,6 +24,33 @@ fn return_inner_type(
     Err("all interface method must return Result<T>")
 }
 
+fn method_name(m: &TraitItemMethod) -> String {
+    for attr in m.attrs.iter() {
+        if !attr.path.is_ident("rename") {
+            continue;
+        }
+
+        let meta = attr
+            .parse_meta()
+            .expect("rename require single string literal");
+
+        if let Meta::List(l) = meta {
+            if !l.path.is_ident("rename") {
+                continue;
+            }
+
+            let meta = l
+                .nested
+                .first()
+                .expect("rename requires single string literal");
+            if let NestedMeta::Lit(Lit::Str(st)) = meta {
+                return format!("{}", st.value());
+            }
+        }
+    }
+
+    return format!("{}", m.sig.ident);
+}
 /// annotate the service trait with `object` this will
 /// generate a usable server and client stubs.
 /// it accepts
@@ -56,13 +79,26 @@ fn return_inner_type(
 /// the generated Stub is a wrapper on top of the rbus::Client to abstract calls to remote service
 ///
 /// `let stub = [Name]Stub::new("module", client);`
+///
+/// for compatibility with other languages (for example Golang) there is a helper attribute
+/// #[rename("new_name")] that can be added on method to rename the method. Since rust uses
+/// snake_case, while Go uses CamelCase. rename is needed if method will be used across languages
+///
 #[proc_macro_attribute]
 pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
 
     let input = parse_macro_input!(input as ItemTrait);
+    let mut cleaned = input.clone();
 
-    // println!("{:#?}", input);
+    for item in cleaned.items.iter_mut() {
+        if let TraitItem::Method(ref mut method) = item {
+            //TODO: this removes ALL attributes on the
+            //method. May be we should only remove the rename attribute
+            method.attrs = vec![];
+        }
+    }
+
     let name_id = &input.ident;
     let name = format!("{}", name_id);
     let name_mod = format_ident!("{}_mod", name_id);
@@ -74,15 +110,11 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
 
     for arg in args {
         if let NestedMeta::Meta(Meta::NameValue(value)) = arg {
-            match path_ident(&value.path).map(|i| format!("{}", i)) {
-                Some(name) if name == "name" => {
-                    name_lit = value.lit;
-                }
-                Some(name) if name == "version" => {
-                    version_lit = value.lit;
-                }
-                _ => (),
-            };
+            if value.path.is_ident("name") {
+                name_lit = value.lit;
+            } else if value.path.is_ident("version") {
+                version_lit = value.lit;
+            }
         }
     }
 
@@ -93,11 +125,11 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
         .map(|item| {
             if let TraitItem::Method(method) = item {
                 let name_id = &method.sig.ident;
-                let name_str = format!("{}", name_id);
+                let name_lit = method_name(method);
                 let args = (0..method.sig.inputs.len() - 1).map(syn::Index::from);
                 let branch = if method.sig.asyncness.is_none() {
                     quote! {
-                        #name_str => Ok(self
+                        #name_lit => Ok(self
                             .inner
                             .#name_id(
                                 #( request.inputs.at(#args)?, )*
@@ -106,7 +138,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
                     }
                 } else {
                     quote! {
-                        #name_str => Ok(self
+                        #name_lit => Ok(self
                             .inner
                             .#name_id(
                                 #( request.inputs.at(#args)?, )*
@@ -121,14 +153,14 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
             unreachable!();
         });
 
-    let calls = input
+    let stub_calls = input
     .items
     .iter()
     .filter(|item| matches!(item, TraitItem::Method(m) if m.sig.inputs.len() > 0 && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
     .map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;
-            let name_lit = format!("{}", name);
+            let name_lit = method_name(method);
             let inputs = method.sig.inputs.iter().skip(1);
             let arg_names = method.sig.inputs.iter().skip(1).map(|arg| {
                if let FnArg::Typed(a) = &arg {
@@ -166,7 +198,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
             };
 
             #[async_trait::async_trait]
-            #input
+            #cleaned
 
             pub struct #name_object<T>
             where
@@ -217,7 +249,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
                     }
                 }
 
-                #(#calls)*
+                #(#stub_calls)*
             }
         }
 
