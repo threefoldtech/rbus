@@ -1,16 +1,47 @@
-use crate::protocol::{Error, ObjectID, Output, Request, Result, Tuple};
+use crate::protocol::{self, Error, ObjectID, Output, Request, Result, Tuple};
 use async_trait::async_trait;
+use bb8_redis::redis::{ErrorKind, RedisError};
+use serde::Serialize;
 use std::collections::HashMap;
 use thiserror::Error;
+use tokio::sync::mpsc;
 
 pub mod redis;
 pub use self::redis::Server;
+pub struct Sender {
+    // id: String,
+    tx: mpsc::Sender<serde_bytes::ByteBuf>,
+}
+impl Sender {
+    pub async fn send<T: Serialize>(&self, msg: T) -> Result<()> {
+        let msg = protocol::encode(&msg).unwrap();
+        match self.tx.send(msg).await {
+            Ok(_) => {}
+            Err(err) => log::error!("failed to send output to channel: {}", err),
+        };
+        Ok(())
+    }
+}
+pub struct Receiver {
+    rx: mpsc::Receiver<serde_bytes::ByteBuf>,
+}
+impl Receiver {
+    pub async fn recv(&mut self) -> Option<serde_bytes::ByteBuf> {
+        self.rx.recv().await
+    }
+}
 
+pub fn stream() -> (Sender, Receiver) {
+    let (tx, rx) = mpsc::channel(5);
+    return (Sender { tx }, Receiver { rx });
+}
 /// Object trait
 #[async_trait]
 pub trait Object {
     /// return object id
     fn id(&self) -> ObjectID;
+    fn streams(&self) -> Result<HashMap<String, Receiver>>;
+
     /// dispatch request and get an Output
     async fn dispatch(&self, request: Request) -> Result<Output>;
 }
@@ -61,5 +92,11 @@ impl Object for SimpleObject {
         };
 
         handler.handle(request.inputs).await
+    }
+    fn streams(&self) -> Result<HashMap<String, Receiver>> {
+        let mut streams_map = HashMap::new();
+        let (_, rx) = mpsc::channel(1);
+        streams_map.insert("".to_string(), Receiver { rx });
+        Ok(streams_map)
     }
 }

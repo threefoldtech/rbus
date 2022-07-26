@@ -1,5 +1,5 @@
-use super::Object;
 use super::{Error, Result};
+use super::{Object, Receiver};
 use crate::protocol::{Output, Request, Response};
 use bb8_redis::{bb8::Pool, redis::AsyncCommands, RedisConnectionManager};
 use std::collections::HashMap;
@@ -66,9 +66,15 @@ impl Server {
     /// start the server. blocks forever. you can spawn it as a separate
     /// task to avoid blocking of the main thread.
     pub async fn run(self) {
+        for (key, object) in &self.objects {
+            for (name, stream) in object.streams().unwrap() {
+                let fqdn = format!("{}.{}.{}", self.module, key, name);
+                stream_worker(self.pool.clone(), fqdn, stream);
+            }
+        }
+
         // routers can not be changed afterwords. so we need to spawn workers here
         // and pass them a copy of the routers, and a way for them to pull for messages.
-
         let module = self.module;
         let routers = self.objects;
         let queues: Vec<String> = routers
@@ -177,4 +183,29 @@ impl workers::Work for Worker {
             log::error!("failed to send response: {}", err);
         }
     }
+}
+
+fn stream_worker(pool: Pool<RedisConnectionManager>, id: String, mut receiver: Receiver) {
+    tokio::spawn(async move {
+        loop {
+            while let Some(msg) = receiver.recv().await {
+                let mut con = match pool.get().await {
+                    Ok(con) => con,
+                    Err(_) => {
+                        log::error!("failed to get connection");
+                        continue;
+                    }
+                };
+                println!("publishing message published");
+                println!("{:?}", msg.to_vec());
+                let _: () = match con.publish(id.clone(), "test".to_string()).await {
+                    Ok(x) => x,
+                    Err(_) => {
+                        log::error!("failed to publish");
+                        println!("failed to publish message")
+                    }
+                };
+            }
+        }
+    });
 }

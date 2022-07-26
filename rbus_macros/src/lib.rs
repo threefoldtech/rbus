@@ -196,6 +196,8 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
                 client,
                 protocol
             };
+            use std::collections::HashMap;
+
 
             #[async_trait::async_trait]
             #cleaned
@@ -222,6 +224,9 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
 
                         _ => Err(protocol::Error::UnknownMethod(request.method)),
                     }
+                }
+                fn streams(&self) -> protocol::Result<HashMap<String, server::Receiver>>{
+                    unimplemented!()
                 }
             }
 

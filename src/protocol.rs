@@ -69,7 +69,7 @@ impl Display for ObjectID {
     }
 }
 
-fn encode<T: Serialize>(o: T) -> Result<ByteBuf> {
+pub fn encode<T: Serialize>(o: T) -> Result<ByteBuf> {
     let mut buffer: Vec<u8> = Vec::new();
 
     let encoder = Serializer::new(&mut buffer);

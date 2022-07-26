@@ -1,6 +1,10 @@
-use crate::protocol::{Error, Output, Request, Response, Result};
+use crate::{
+    protocol::{Error, ObjectID, Output, Request, Response, Result},
+    server::{stream, Receiver},
+};
 use bb8_redis::{bb8::Pool, redis::AsyncCommands, RedisConnectionManager};
-
+use futures_util::stream::StreamExt;
+use serde_bytes::ByteBuf;
 /// raw rbus client object.
 /// Usually you would wrap this client in a stub to use more
 /// abstract functions.
@@ -44,5 +48,54 @@ impl Client {
         }
 
         Ok(response.output)
+    }
+    pub async fn stream<S>(
+        &mut self,
+        module: S,
+        object_id: ObjectID,
+        key: String,
+    ) -> Result<Receiver>
+    where
+        S: AsRef<str>,
+    {
+        let (sender, receiver) = stream();
+        let pool = self.pool.clone();
+        let channel = format!("{}.{}.{}", module.as_ref(), object_id, key);
+        tokio::spawn(async move {
+            let con = pool
+                .dedicated_connection()
+                .await
+                .map_err(|err| Error::Protocol(format!("failed to get redis connection: {}", err)))
+                .unwrap();
+            let mut pubsub = con.into_pubsub();
+            pubsub.subscribe(channel).await.unwrap();
+            let mut pubsub_stream = pubsub.on_message();
+            while let Some(msg) = pubsub_stream.next().await {
+                let message: Vec<u8> = msg.get_payload().unwrap();
+                println!("message {:?}", message);
+                let message = ByteBuf::from(message);
+                match sender.send(message).await {
+                    Ok(_) => {
+                        println!("message send")
+                    }
+                    Err(_) => {
+                        log::error!("Can not send retrived message from redis channel");
+                        println!("can not send retrieved message ");
+                    }
+                };
+            }
+        });
+        Ok(receiver)
+    }
+    pub async fn stream_test(mut self) -> Receiver {
+        let receiver = self
+            .stream(
+                "full-test",
+                ObjectID::new("calculator", "1.0"),
+                "stream_test".to_string(),
+            )
+            .await
+            .unwrap();
+        receiver
     }
 }
