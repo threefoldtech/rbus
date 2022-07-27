@@ -1,20 +1,36 @@
 use crate::protocol::{self, Error, ObjectID, Output, Request, Result, Tuple};
 use async_trait::async_trait;
-use bb8_redis::redis::{ErrorKind, RedisError};
-use serde::Serialize;
+use rmp_serde;
+use serde::{de::DeserializeOwned, Serialize};
+use serde_bytes::ByteBuf;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use thiserror::Error;
 use tokio::sync::mpsc;
-
 pub mod redis;
 pub use self::redis::Server;
+pub struct SenderX<T> {
+    tx: mpsc::Sender<serde_bytes::ByteBuf>,
+    p: PhantomData<T>,
+}
+impl<T> SenderX<T>
+where
+    T: Serialize,
+{
+    pub async fn send(&self, msg: &T) -> Result<()> {
+        let msg = protocol::encode(msg)?;
+        match self.tx.send(msg).await {
+            Ok(_) => {}
+            Err(err) => log::error!("failed to send output to channel: {}", err),
+        };
+        Ok(())
+    }
+}
 pub struct Sender {
-    // id: String,
     tx: mpsc::Sender<serde_bytes::ByteBuf>,
 }
 impl Sender {
-    pub async fn send<T: Serialize>(&self, msg: T) -> Result<()> {
-        let msg = protocol::encode(&msg).unwrap();
+    pub async fn send(&self, msg: ByteBuf) -> Result<()> {
         match self.tx.send(msg).await {
             Ok(_) => {}
             Err(err) => log::error!("failed to send output to channel: {}", err),
@@ -23,7 +39,7 @@ impl Sender {
     }
 }
 pub struct Receiver {
-    rx: mpsc::Receiver<serde_bytes::ByteBuf>,
+    pub rx: mpsc::Receiver<serde_bytes::ByteBuf>,
 }
 impl Receiver {
     pub async fn recv(&mut self) -> Option<serde_bytes::ByteBuf> {
@@ -31,9 +47,33 @@ impl Receiver {
     }
 }
 
-pub fn stream() -> (Sender, Receiver) {
+pub struct ReceiverX<T> {
+    rx: mpsc::Receiver<serde_bytes::ByteBuf>,
+    p: PhantomData<T>,
+}
+impl<T> ReceiverX<T>
+where
+    T: DeserializeOwned,
+{
+    pub async fn recv(&mut self) -> Option<T> {
+        let received = self.rx.recv().await?;
+        let decoded = rmp_serde::decode::from_read_ref(&received);
+        match decoded {
+            Ok(decoded) => Some(decoded),
+            Err(err) => {
+                log::error!("failed to decode message. Error was {}", err);
+                None
+            }
+        }
+    }
+}
+pub fn stream_senderx<T>() -> (SenderX<T>, Receiver) {
     let (tx, rx) = mpsc::channel(5);
-    return (Sender { tx }, Receiver { rx });
+    return (SenderX { tx, p: PhantomData }, Receiver { rx });
+}
+pub fn stream_receiverx<T>() -> (Sender, ReceiverX<T>) {
+    let (tx, rx) = mpsc::channel(5);
+    return (Sender { tx }, ReceiverX { rx, p: PhantomData });
 }
 /// Object trait
 #[async_trait]

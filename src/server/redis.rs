@@ -67,9 +67,17 @@ impl Server {
     /// task to avoid blocking of the main thread.
     pub async fn run(self) {
         for (key, object) in &self.objects {
-            for (name, stream) in object.streams().unwrap() {
-                let fqdn = format!("{}.{}.{}", self.module, key, name);
-                stream_worker(self.pool.clone(), fqdn, stream);
+            match object.streams() {
+                Ok(object_streams) => {
+                    for (name, stream) in object_streams {
+                        let fqdn = format!("{}.{}.{}", self.module, key, name);
+                        stream_worker(self.pool.clone(), fqdn, stream);
+                    }
+                }
+                Err(err) => {
+                    log::error!("Error getting object streams. Error was {}", err);
+                    continue;
+                }
             }
         }
 
@@ -196,13 +204,10 @@ fn stream_worker(pool: Pool<RedisConnectionManager>, id: String, mut receiver: R
                         continue;
                     }
                 };
-                println!("publishing message published");
-                println!("{:?}", msg.to_vec());
-                let _: () = match con.publish(id.clone(), "test".to_string()).await {
+                let _: () = match con.publish(&id, msg.into_vec()).await {
                     Ok(x) => x,
                     Err(_) => {
                         log::error!("failed to publish");
-                        println!("failed to publish message")
                     }
                 };
             }

@@ -1,16 +1,21 @@
 use crate::{
     protocol::{Error, ObjectID, Output, Request, Response, Result},
-    server::{stream, Receiver},
+    server::{stream_receiverx, ReceiverX},
 };
 use bb8_redis::{bb8::Pool, redis::AsyncCommands, RedisConnectionManager};
-use futures_util::stream::StreamExt;
+use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
+use tokio::time::{sleep, Duration};
 /// raw rbus client object.
 /// Usually you would wrap this client in a stub to use more
 /// abstract functions.
 #[derive(Clone)]
 pub struct Client {
     pool: Pool<RedisConnectionManager>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Message {
+    data: String,
 }
 
 impl Client {
@@ -49,45 +54,65 @@ impl Client {
 
         Ok(response.output)
     }
-    pub async fn stream<S>(
+
+    pub async fn stream<S, T>(
         &mut self,
         module: S,
         object_id: ObjectID,
         key: String,
-    ) -> Result<Receiver>
+    ) -> Result<ReceiverX<T>>
     where
         S: AsRef<str>,
     {
-        let (sender, receiver) = stream();
-        let pool = self.pool.clone();
+        let (sender, receiver) = stream_receiverx();
         let channel = format!("{}.{}.{}", module.as_ref(), object_id, key);
+
+        let client = bb8_redis::redis::Client::open("redis://127.0.0.1/")
+            .map_err(|err| Error::Protocol(format!("failed to get redis client: {}", err)))?;
+
+        let mut con = client
+            .get_connection()
+            .map_err(|err| Error::Protocol(format!("failed to get redis connection: {}", err)))?;
         tokio::spawn(async move {
-            let con = pool
-                .dedicated_connection()
-                .await
-                .map_err(|err| Error::Protocol(format!("failed to get redis connection: {}", err)))
-                .unwrap();
-            let mut pubsub = con.into_pubsub();
-            pubsub.subscribe(channel).await.unwrap();
-            let mut pubsub_stream = pubsub.on_message();
-            while let Some(msg) = pubsub_stream.next().await {
-                let message: Vec<u8> = msg.get_payload().unwrap();
-                println!("message {:?}", message);
-                let message = ByteBuf::from(message);
-                match sender.send(message).await {
-                    Ok(_) => {
-                        println!("message send")
+            let mut pubsub = con.as_pubsub();
+            loop {
+                if let Err(err) = pubsub.subscribe(&channel) {
+                    log::error!(
+                        "Failed to subscribe to channel: {}. Error was {}",
+                        &channel,
+                        err
+                    );
+                }
+                sleep(Duration::from_secs(2)).await;
+                let msg = match pubsub.get_message() {
+                    Ok(msg) => msg,
+                    Err(err) => {
+                        log::error!("failed to get message. Error was {}", err);
+                        continue;
                     }
-                    Err(_) => {
-                        log::error!("Can not send retrived message from redis channel");
-                        println!("can not send retrieved message ");
+                };
+                let message: Vec<u8> = match msg.get_payload() {
+                    Ok(message) => message,
+                    Err(err) => {
+                        log::error!("failed to get message payload. Error was {}", err);
+                        continue;
+                    }
+                };
+                match sender.send(ByteBuf::from(message)).await {
+                    Ok(_) => (),
+                    Err(err) => {
+                        log::error!(
+                            "Can not send retrived message from redis channel. Error was {}",
+                            err
+                        );
+                        continue;
                     }
                 };
             }
         });
         Ok(receiver)
     }
-    pub async fn stream_test(mut self) -> Receiver {
+    pub async fn stream_test<T>(mut self) -> ReceiverX<T> {
         let receiver = self
             .stream(
                 "full-test",

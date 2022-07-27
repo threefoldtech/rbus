@@ -1,6 +1,5 @@
 extern crate rbus;
 use std::collections::HashMap;
-use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -8,9 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use protocol::ObjectID;
 use rbus::protocol;
-use rbus::server::{stream, Object, Receiver};
-
-use bb8_redis::redis::{ErrorKind, RedisError};
+use rbus::server::{stream_senderx, Object, Receiver, ReceiverX};
 
 // You can build your own complex object to pass around as
 // inputs and outputs as long as they are serder serializable
@@ -101,14 +98,13 @@ pub struct Message {
 struct Calc;
 impl Calc {
     fn stream_test(&self) -> Receiver {
-        let (sender, receiver) = stream();
+        let (sender, receiver) = stream_senderx();
         tokio::spawn(async move {
             let mut count = 1;
             loop {
                 let data = format!("test {}", count);
                 let msg = Message { data };
-                println!("inside stream_test: {}", format!("test {}", count));
-                match sender.send(msg).await {
+                match sender.send(&msg).await {
                     Ok(_) => {
                         count += 1;
                     }
@@ -174,7 +170,47 @@ impl Object for Calc {
 }
 
 #[tokio::test]
-async fn full() {
+async fn test_encode() {
+    let msg = Message {
+        data: "test".to_string(),
+    };
+    let encoded = protocol::encode(&msg).unwrap();
+    let message: Message = rmp_serde::decode::from_read_ref(&encoded).unwrap();
+    assert_eq!(msg.data, message.data);
+}
+// #[tokio::test]
+// async fn full() {
+//     let pool = rbus::pool("redis://localhost:6379").await.unwrap();
+
+//     const MODULE: &str = "full-test";
+//     // build the object dispatcher
+//     let calc = CalculatorObject::from(CalculatorImpl);
+//     // create the module (server)
+//     let mut server = rbus::Server::new(pool.clone(), MODULE, 3).await.unwrap();
+//     // register the object
+//     server.register(calc);
+
+//     println!("running server");
+//     tokio::spawn(server.run());
+
+//     let client = rbus::Client::new(pool);
+
+//     // same as CalculatorObject, the CalculatorStub is auto generated in
+//     // this scope. Not the
+//     let calc = CalculatorStub::new(MODULE, client);
+
+//     assert_eq!((3f64, -1f64), calc.add(1f64, 2f64).await.unwrap());
+//     assert_eq!(5f64, calc.divide(10f64, 2f64).await.unwrap());
+
+//     use rbus::protocol::Error;
+
+//     assert!(matches!(
+//         calc.divide(10f64, 0f64).await,
+//         Err(Error::Call(err)) if err.message == "cannot divide by zero"));
+// }
+
+#[tokio::test]
+async fn testing_streams() {
     let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
     const MODULE: &str = "full-test";
@@ -190,40 +226,16 @@ async fn full() {
     tokio::spawn(server.run());
 
     let client = rbus::Client::new(pool);
-    let mut receiver = client.stream_test().await;
+    let mut receiver: ReceiverX<Message> = client.stream_test().await;
     // let join_handle = tokio::spawn(async move {
     loop {
         let msg = match receiver.recv().await {
             Some(msg) => msg,
-            None => continue,
+            None => {
+                continue;
+            }
         };
-        let message: Result<Message, RedisError> =
-            rmp_serde::decode::from_read_ref(&msg).map_err(|err| {
-                RedisError::from((
-                    ErrorKind::TypeError,
-                    "failed to decode request",
-                    err.to_string(),
-                ))
-            });
-        match message {
-            Ok(message) => print!("got message {}", message.data),
-            Err(_) => log::error!("failed to get message"),
-        }
+
+        println!("Got a message {:?}", msg);
     }
-    // });
-    // join_handle.await.unwrap();
-    // same as CalculatorObject, the CalculatorStub is auto generated in
-    // this scope. Not the
-    // let pool1 = rbus::pool("redis://localhost:6379").await.unwrap();
-    // let client1 = rbus::Client::new(pool1);
-    // let calc = CalculatorStub::new(MODULE, client1);
-
-    // assert_eq!((3f64, -1f64), calc.add(1f64, 2f64).await.unwrap());
-    // assert_eq!(5f64, calc.divide(10f64, 2f64).await.unwrap());
-
-    // use rbus::protocol::Error;
-
-    // assert!(matches!(
-    //     calc.divide(10f64, 0f64).await,
-    //     Err(Error::Call(err)) if err.message == "cannot divide by zero"));
 }
