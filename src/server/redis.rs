@@ -1,5 +1,5 @@
 use super::{Error, Result};
-use super::{Object, Receiver};
+use super::{Object, Sink};
 use crate::protocol::{Output, Request, Response};
 use bb8_redis::{bb8::Pool, redis::AsyncCommands, RedisConnectionManager};
 use std::collections::HashMap;
@@ -68,19 +68,21 @@ impl Server {
     pub async fn run(self) {
         for (key, object) in &self.objects {
             match object.streams() {
-                Ok(object_streams) => {
-                    for (name, stream) in object_streams {
+                Ok(streams) => {
+                    for (name, stream) in streams {
                         let fqdn = format!("{}.{}.{}", self.module, key, name);
+                        log::debug!("starting stream: {}", fqdn);
                         stream_worker(self.pool.clone(), fqdn, stream);
                     }
                 }
                 Err(err) => {
-                    log::error!("Error getting object streams. Error was {}", err);
+                    log::error!("error getting object streams: {}", err);
                     continue;
                 }
             }
         }
 
+        log::debug!("streams started successfully");
         // routers can not be changed afterwords. so we need to spawn workers here
         // and pass them a copy of the routers, and a way for them to pull for messages.
         let module = self.module;
@@ -193,24 +195,24 @@ impl workers::Work for Worker {
     }
 }
 
-fn stream_worker(pool: Pool<RedisConnectionManager>, id: String, mut receiver: Receiver) {
+fn stream_worker(pool: Pool<RedisConnectionManager>, channel: String, mut receiver: Sink) {
     tokio::spawn(async move {
-        loop {
-            while let Some(msg) = receiver.recv().await {
-                let mut con = match pool.get().await {
-                    Ok(con) => con,
-                    Err(_) => {
-                        log::error!("failed to get connection");
-                        continue;
-                    }
-                };
-                let _: () = match con.publish(&id, msg.into_vec()).await {
-                    Ok(x) => x,
-                    Err(_) => {
-                        log::error!("failed to publish");
-                    }
-                };
-            }
+        while let Some(msg) = receiver.recv().await {
+            log::debug!("received event to streamer");
+            let mut con = match pool.get().await {
+                Ok(con) => con,
+                Err(_) => {
+                    log::error!("failed to get connection");
+                    continue;
+                }
+            };
+            let _: () = match con.publish(&channel, msg.into_vec()).await {
+                Ok(x) => x,
+                Err(_) => {
+                    log::error!("failed to publish");
+                }
+            };
+            log::debug!("event published");
         }
     });
 }

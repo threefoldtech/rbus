@@ -6,9 +6,9 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use protocol::ObjectID;
+use rbus::client::Receiver;
 use rbus::protocol;
-use rbus::server::{stream_senderx, Object, Receiver, ReceiverX};
-
+use rbus::server::{Object, Sender, Sink};
 // You can build your own complex object to pass around as
 // inputs and outputs as long as they are serder serializable
 
@@ -47,81 +47,11 @@ pub struct Message {
     data: String,
 }
 // some implementation of our trait
-// struct CalculatorImpl;
-// impl CalculatorImpl {
-//     fn stream_test(&self) -> Receiver {
-//         let (sender, receiver) = stream();
-//         tokio::spawn(async move {
-//             let mut count = 1;
-//             loop {
-//                 let msg = Message {
-//                     data: format!("test {}", count),
-//                 };
-//                 match sender.send(msg).await {
-//                     Ok(_) => {
-//                         count += 1;
-//                     }
-//                     Err(_) => log::error!("failed to send data"),
-//                 };
-//                 sleep(Duration::from_secs(5));
-//             }
-//         });
+struct CalculatorImpl;
 
-//         return receiver;
-//     }
-// }
-
-// /// async_trait is needed because we using async methods in tratis
-// #[async_trait::async_trait]
-// impl Calculator for CalculatorImpl {
-//     fn add(&self, a: f64, b: f64) -> Result<(f64, f64)> {
-//         log::debug!("adding({}, {})", a, b);
-//         Ok((a + b, a - b))
-//     }
-//     fn divide(&self, a: f64, b: f64) -> Result<f64> {
-//         if b == 0.0 {
-//             anyhow::bail!("cannot divide by zero")
-//         }
-//         Ok(a / b)
-//     }
-//     fn multiply(&self, a: f64, b: f64) -> Result<f64> {
-//         Ok(a * b)
-//     }
-//     async fn get_data(&self) -> Result<Data> {
-//         Ok(Data {
-//             binary: vec![],
-//             str: "Hello".into(),
-//         })
-//     }
-// }
-
-struct Calc;
-impl Calc {
-    fn stream_test(&self) -> Receiver {
-        let (sender, receiver) = stream_senderx();
-        tokio::spawn(async move {
-            let mut count = 1;
-            loop {
-                let data = format!("test {}", count);
-                let msg = Message { data };
-                match sender.send(&msg).await {
-                    Ok(_) => {
-                        count += 1;
-                    }
-                    Err(_) => {
-                        println!("failed to send data");
-                        log::error!("failed to send data")
-                    }
-                };
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-        });
-
-        return receiver;
-    }
-}
+/// async_trait is needed because we using async methods in tratis
 #[async_trait::async_trait]
-impl Calculator for Calc {
+impl Calculator for CalculatorImpl {
     fn add(&self, a: f64, b: f64) -> Result<(f64, f64)> {
         log::debug!("adding({}, {})", a, b);
         Ok((a + b, a - b))
@@ -143,28 +73,48 @@ impl Calculator for Calc {
     }
 }
 
+struct StreamTest;
+impl StreamTest {
+    fn stream_test(&self) -> Sink {
+        log::debug!("stream TEST started");
+        let (sender, receiver) = Sender::new();
+        tokio::spawn(async move {
+            let mut count = 1;
+            loop {
+                let data = format!("test {}", count);
+                let msg = Message { data };
+                log::debug!("sending event");
+                match sender.send(&msg).await {
+                    Ok(_) => {
+                        count += 1;
+                    }
+                    Err(_) => {
+                        log::error!("failed to send data")
+                    }
+                };
+                log::debug!("event sent");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+
+        return receiver;
+    }
+}
+
 #[async_trait::async_trait]
-impl Object for Calc {
+impl Object for StreamTest {
     fn id(&self) -> ObjectID {
         ObjectID::new("calculator", "1.0")
     }
-    async fn dispatch(&self, request: protocol::Request) -> protocol::Result<protocol::Output> {
-        match request.method.as_str() {
-            "add" => {
-                let x: f64 = request.inputs.at(0)?;
-                let y: f64 = request.inputs.at(1)?;
 
-                let output: Result<f64, &'static str> = Ok(x + y);
-                Ok(output.into())
-            }
-            _ => Err(protocol::Error::UnknownMethod(request.method)),
-        }
+    async fn dispatch(&self, request: protocol::Request) -> protocol::Result<protocol::Output> {
+        Err(protocol::Error::UnknownMethod(request.method))
     }
 
-    fn streams(&self) -> std::result::Result<HashMap<String, Receiver>, rbus::protocol::Error> {
+    fn streams(&self) -> std::result::Result<HashMap<String, Sink>, rbus::protocol::Error> {
         let mut streams = HashMap::new();
         let receiver = self.stream_test();
-        streams.insert(String::from("stream_test"), receiver);
+        streams.insert("stream_test".into(), receiver);
         return Ok(streams);
     }
 }
@@ -211,28 +161,32 @@ async fn test_encode() {
 
 #[tokio::test]
 async fn testing_streams() {
+    simple_logger::init_with_level(log::Level::Debug).unwrap();
+
     let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
     const MODULE: &str = "full-test";
     // build the object dispatcher
     // let calc = CalculatorObject::from(CalculatorImpl);
-    let calc = Calc {};
+    let calc = StreamTest;
     // create the module (server)
     let mut server = rbus::Server::new(pool.clone(), MODULE, 3).await.unwrap();
     // register the object
     server.register(calc);
 
-    println!("running server");
     tokio::spawn(server.run());
 
-    let client = rbus::Client::new(pool);
-    let mut receiver: ReceiverX<Message> = client.stream_test().await;
+    let client = rbus::Client::new("redis://localhost:6379").await.unwrap();
+    let mut receiver: Receiver<Message> = client
+        .stream(MODULE, ObjectID::new("calculator", "1.0"), "stream_test")
+        .await
+        .unwrap();
     // let join_handle = tokio::spawn(async move {
     loop {
         let msg = match receiver.recv().await {
             Some(msg) => msg,
             None => {
-                continue;
+                break;
             }
         };
 

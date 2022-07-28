@@ -9,78 +9,41 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 pub mod redis;
 pub use self::redis::Server;
-pub struct SenderX<T> {
+pub struct Sender<T> {
     tx: mpsc::Sender<serde_bytes::ByteBuf>,
     p: PhantomData<T>,
 }
-impl<T> SenderX<T>
+impl<T> Sender<T>
 where
     T: Serialize,
 {
-    pub async fn send(&self, msg: &T) -> Result<()> {
+    pub fn new() -> (Self, Sink) {
+        let (tx, rx) = mpsc::channel(5);
+        return (Self { tx, p: PhantomData }, Sink { rx });
+    }
+
+    pub async fn send(&self, msg: &T) -> anyhow::Result<()> {
         let msg = protocol::encode(msg)?;
-        match self.tx.send(msg).await {
-            Ok(_) => {}
-            Err(err) => log::error!("failed to send output to channel: {}", err),
-        };
-        Ok(())
+        Ok(self.tx.send(msg).await?)
     }
 }
-pub struct Sender {
-    tx: mpsc::Sender<serde_bytes::ByteBuf>,
-}
-impl Sender {
-    pub async fn send(&self, msg: ByteBuf) -> Result<()> {
-        match self.tx.send(msg).await {
-            Ok(_) => {}
-            Err(err) => log::error!("failed to send output to channel: {}", err),
-        };
-        Ok(())
-    }
-}
-pub struct Receiver {
+
+pub struct Sink {
     pub rx: mpsc::Receiver<serde_bytes::ByteBuf>,
 }
-impl Receiver {
+
+impl Sink {
     pub async fn recv(&mut self) -> Option<serde_bytes::ByteBuf> {
         self.rx.recv().await
     }
 }
 
-pub struct ReceiverX<T> {
-    rx: mpsc::Receiver<serde_bytes::ByteBuf>,
-    p: PhantomData<T>,
-}
-impl<T> ReceiverX<T>
-where
-    T: DeserializeOwned,
-{
-    pub async fn recv(&mut self) -> Option<T> {
-        let received = self.rx.recv().await?;
-        let decoded = rmp_serde::decode::from_read_ref(&received);
-        match decoded {
-            Ok(decoded) => Some(decoded),
-            Err(err) => {
-                log::error!("failed to decode message. Error was {}", err);
-                None
-            }
-        }
-    }
-}
-pub fn stream_senderx<T>() -> (SenderX<T>, Receiver) {
-    let (tx, rx) = mpsc::channel(5);
-    return (SenderX { tx, p: PhantomData }, Receiver { rx });
-}
-pub fn stream_receiverx<T>() -> (Sender, ReceiverX<T>) {
-    let (tx, rx) = mpsc::channel(5);
-    return (Sender { tx }, ReceiverX { rx, p: PhantomData });
-}
 /// Object trait
 #[async_trait]
 pub trait Object {
     /// return object id
     fn id(&self) -> ObjectID;
-    fn streams(&self) -> Result<HashMap<String, Receiver>>;
+    fn streams(&self) -> Result<HashMap<String, Sink>>;
 
     /// dispatch request and get an Output
     async fn dispatch(&self, request: Request) -> Result<Output>;
@@ -133,10 +96,8 @@ impl Object for SimpleObject {
 
         handler.handle(request.inputs).await
     }
-    fn streams(&self) -> Result<HashMap<String, Receiver>> {
-        let mut streams_map = HashMap::new();
-        let (_, rx) = mpsc::channel(1);
-        streams_map.insert("".to_string(), Receiver { rx });
-        Ok(streams_map)
+
+    fn streams(&self) -> Result<HashMap<String, Sink>> {
+        Ok(HashMap::new())
     }
 }

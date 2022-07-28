@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bb8_redis::{bb8::Pool, RedisConnectionManager};
+use bb8_redis::{bb8::Pool, redis::IntoConnectionInfo, RedisConnectionManager};
 
 pub mod client;
 pub mod protocol;
