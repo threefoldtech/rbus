@@ -211,7 +211,10 @@ async fn testing_streams() {
             // This however is because both the server and the client are running in the same
             // process which is not a valid case. If the server is running separately it will keep
             // sending events hence eventually the client subscribe will terminate
-            return;
+
+            // the problem is this scenario can happen in real life if server exited but clients are still
+            // waiting. hence a good solution is needed for client cancellation
+            break;
         }
     }
 }
