@@ -1,39 +1,43 @@
 use crate::protocol::{self, Error, ObjectID, Output, Request, Result, Tuple};
 use async_trait::async_trait;
-use rmp_serde;
-use serde::{de::DeserializeOwned, Serialize};
-use serde_bytes::ByteBuf;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use thiserror::Error;
 use tokio::sync::mpsc;
 pub mod redis;
 pub use self::redis::Server;
+
+/// Sender is used by streams to publish events.
 pub struct Sender<T> {
     tx: mpsc::Sender<serde_bytes::ByteBuf>,
     p: PhantomData<T>,
 }
+
 impl<T> Sender<T>
 where
     T: Serialize,
 {
+    /// create a new Sender, Sink pair. a
     pub fn new() -> (Self, Sink) {
         let (tx, rx) = mpsc::channel(5);
-        return (Self { tx, p: PhantomData }, Sink { rx });
+        (Self { tx, p: PhantomData }, Sink { rx })
     }
 
+    /// send pushed object T as event
     pub async fn send(&self, msg: &T) -> anyhow::Result<()> {
         let msg = protocol::encode(msg)?;
         Ok(self.tx.send(msg).await?)
     }
 }
 
+/// Sink is the receiver part of a event Sender. used internally by rbus
 pub struct Sink {
     pub rx: mpsc::Receiver<serde_bytes::ByteBuf>,
 }
 
 impl Sink {
-    pub async fn recv(&mut self) -> Option<serde_bytes::ByteBuf> {
+    async fn recv(&mut self) -> Option<serde_bytes::ByteBuf> {
         self.rx.recv().await
     }
 }
@@ -98,6 +102,6 @@ impl Object for SimpleObject {
     }
 
     fn streams(&self) -> Result<HashMap<String, Sink>> {
-        Ok(HashMap::new())
+        Ok(HashMap::default())
     }
 }

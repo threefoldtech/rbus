@@ -5,12 +5,12 @@ use bb8_redis::{
     redis::{AsyncCommands, ConnectionInfo, IntoConnectionInfo},
     RedisConnectionManager,
 };
-use futures_util::StreamExt;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 use serde_bytes::ByteBuf;
 use std::marker::PhantomData;
 use tokio::sync::mpsc;
 
+/// Receiver is returned by the stream method of the client. Used to subscribe to events.
 pub struct Receiver<T> {
     rx: mpsc::Receiver<serde_bytes::ByteBuf>,
     p: PhantomData<T>,
@@ -19,11 +19,13 @@ impl<T> Receiver<T>
 where
     T: DeserializeOwned,
 {
-    pub fn new() -> (Self, Source) {
+    fn new() -> (Self, Source) {
         let (tx, rx) = mpsc::channel(5);
-        return (Self { rx, p: PhantomData }, Source { tx });
+        (Self { rx, p: PhantomData }, Source { tx })
     }
 
+    /// recv receives an event. return None of subscription was stopped (lost redis connection, etc..)
+    /// it's up to the caller to retry subscribing to the event stream again.
     pub async fn recv(&mut self) -> Option<anyhow::Result<T>> {
         let received = self.rx.recv().await?;
         //I really think this should be unwrap because it means there is a "logic" error
@@ -32,13 +34,22 @@ where
     }
 }
 
-pub struct Source {
+/// Source is used internally by the client to send received bytes to Receiver
+struct Source {
     tx: mpsc::Sender<serde_bytes::ByteBuf>,
 }
 
 impl Source {
+    /// send bytes to receiver
+    #[allow(dead_code)]
     pub async fn send(&self, msg: ByteBuf) -> anyhow::Result<()> {
         Ok(self.tx.send(msg).await?)
+    }
+
+    /// send_blocking is a work around for the unstable async redis pubsub. instead we do subscribe
+    /// in blocking code (thread)
+    pub fn send_blocking(&self, msg: ByteBuf) -> anyhow::Result<()> {
+        Ok(self.tx.blocking_send(msg)?)
     }
 }
 
@@ -94,32 +105,28 @@ impl Client {
         Ok(response.output)
     }
 
-    async fn subscribe(
-        pool: Pool<RedisConnectionManager>,
-        source: Source,
-        ch: String,
-    ) -> anyhow::Result<()> {
-        let con = pool.dedicated_connection().await?;
-        let mut pubsub = con.into_pubsub();
-        log::debug!("subscribing to: {}", ch);
+    fn subscribe<C: AsRef<str>>(info: ConnectionInfo, source: Source, ch: C) -> anyhow::Result<()> {
+        let client = bb8_redis::redis::Client::open(info)?;
+        let mut con = client.get_connection()?;
+        let mut pubsub = con.as_pubsub();
         pubsub
-            .subscribe(&ch)
-            .await
+            .subscribe(ch.as_ref())
             .context("failed to subscribe to events")?;
 
-        log::debug!("subscribed to: {}", ch);
-        let mut messages = pubsub.on_message();
-
-        while let Some(msg) = messages.next().await {
-            log::debug!("received event from server");
+        loop {
+            let msg = pubsub.get_message().context("failed to get events")?;
             let payload: Vec<u8> = msg.get_payload()?;
             // if source failed to send it means there is no receiver anymore
-            source.send(ByteBuf::from(payload)).await?;
+            if source.send_blocking(ByteBuf::from(payload)).is_err() {
+                // if we send to push the received message then the receiver has exited
+                // hence we just return and never try again.
+                return Ok(());
+            }
         }
-
-        Ok(())
     }
 
+    /// low level stream, registers to an even stream from the given module/object with given stream name. T must match the
+    /// event type sent by the server (even source).
     pub async fn stream<S, T, K>(&self, module: S, object: ObjectID, key: K) -> Result<Receiver<T>>
     where
         S: AsRef<str>,
@@ -129,7 +136,18 @@ impl Client {
         let (receiver, source) = Receiver::new();
         let channel = format!("{}.{}.{}", module.as_ref(), object, key.as_ref());
 
-        tokio::task::spawn(Self::subscribe(self.pool.clone(), source, channel));
+        let info = self.info.clone();
+        // unfortunately the async redis pubsub is not stable and is causing issues
+        // hence we instead, starting a blocking thread to subscribe.
+        tokio::task::spawn_blocking(move || {
+            if let Err(err) = Self::subscribe(info, source, &channel) {
+                log::error!(
+                    "subscription to events channel '{}' stopped: {}",
+                    channel,
+                    err,
+                )
+            }
+        });
 
         Ok(receiver)
     }

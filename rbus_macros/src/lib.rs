@@ -225,8 +225,9 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
                         _ => Err(protocol::Error::UnknownMethod(request.method)),
                     }
                 }
-                fn streams(&self) -> protocol::Result<HashMap<String, server::Receiver>>{
-                    unimplemented!()
+                fn streams(&self) -> protocol::Result<HashMap<String, server::Sink>>{
+                    // TODO: build streams from trait definition
+                    Ok(HashMap::default())
                 }
             }
 

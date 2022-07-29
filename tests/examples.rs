@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use protocol::ObjectID;
 use rbus::client::Receiver;
-use rbus::protocol;
 use rbus::server::{Object, Sender, Sink};
+use rbus::{object, protocol};
 // You can build your own complex object to pass around as
 // inputs and outputs as long as they are serder serializable
 
@@ -30,7 +30,8 @@ pub struct Data {
 // - all input arguments must be of type <T: Serialize>
 // - return must be a Result (any Result) as long as the E type can be stringfied <E: Display>
 // please check docs for `object` for more details
-// #[object(name = "calculator", version = "1.0")]
+
+#[object(name = "calculator", version = "1.0")]
 #[async_trait::async_trait]
 pub trait Calculator {
     // input and outputs can be anything according to the rules above
@@ -104,7 +105,7 @@ impl StreamTest {
 #[async_trait::async_trait]
 impl Object for StreamTest {
     fn id(&self) -> ObjectID {
-        ObjectID::new("calculator", "1.0")
+        ObjectID::new("streamer", "1.0")
     }
 
     async fn dispatch(&self, request: protocol::Request) -> protocol::Result<protocol::Output> {
@@ -114,7 +115,7 @@ impl Object for StreamTest {
     fn streams(&self) -> std::result::Result<HashMap<String, Sink>, rbus::protocol::Error> {
         let mut streams = HashMap::new();
         let receiver = self.stream_test();
-        streams.insert("stream_test".into(), receiver);
+        streams.insert("test".into(), receiver);
         return Ok(streams);
     }
 }
@@ -128,36 +129,37 @@ async fn test_encode() {
     let message: Message = rmp_serde::decode::from_read_ref(&encoded).unwrap();
     assert_eq!(msg.data, message.data);
 }
-// #[tokio::test]
-// async fn full() {
-//     let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
-//     const MODULE: &str = "full-test";
-//     // build the object dispatcher
-//     let calc = CalculatorObject::from(CalculatorImpl);
-//     // create the module (server)
-//     let mut server = rbus::Server::new(pool.clone(), MODULE, 3).await.unwrap();
-//     // register the object
-//     server.register(calc);
+#[tokio::test]
+async fn full() {
+    let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
-//     println!("running server");
-//     tokio::spawn(server.run());
+    const MODULE: &str = "full-test";
+    // build the object dispatcher
+    let calc = CalculatorObject::from(CalculatorImpl);
+    // create the module (server)
+    let mut server = rbus::Server::new(pool.clone(), MODULE, 3).await.unwrap();
+    // register the object
+    server.register(calc);
 
-//     let client = rbus::Client::new(pool);
+    println!("running server");
+    tokio::spawn(server.run());
 
-//     // same as CalculatorObject, the CalculatorStub is auto generated in
-//     // this scope. Not the
-//     let calc = CalculatorStub::new(MODULE, client);
+    let client = rbus::Client::new("redis://localhost:6379").await.unwrap();
 
-//     assert_eq!((3f64, -1f64), calc.add(1f64, 2f64).await.unwrap());
-//     assert_eq!(5f64, calc.divide(10f64, 2f64).await.unwrap());
+    // same as CalculatorObject, the CalculatorStub is auto generated in
+    // this scope. Not the
+    let calc = CalculatorStub::new(MODULE, client);
 
-//     use rbus::protocol::Error;
+    assert_eq!((3f64, -1f64), calc.add(1f64, 2f64).await.unwrap());
+    assert_eq!(5f64, calc.divide(10f64, 2f64).await.unwrap());
 
-//     assert!(matches!(
-//         calc.divide(10f64, 0f64).await,
-//         Err(Error::Call(err)) if err.message == "cannot divide by zero"));
-// }
+    use rbus::protocol::Error;
+
+    assert!(matches!(
+        calc.divide(10f64, 0f64).await,
+        Err(Error::Call(err)) if err.message == "cannot divide by zero"));
+}
 
 #[tokio::test]
 async fn testing_streams() {
@@ -176,20 +178,40 @@ async fn testing_streams() {
 
     tokio::spawn(server.run());
 
+    //tokio::time::sleep(Duration::from_secs(3)).await;
     let client = rbus::Client::new("redis://localhost:6379").await.unwrap();
     let mut receiver: Receiver<Message> = client
-        .stream(MODULE, ObjectID::new("calculator", "1.0"), "stream_test")
+        .stream(MODULE, ObjectID::new("streamer", "1.0"), "test")
         .await
         .unwrap();
     // let join_handle = tokio::spawn(async move {
     loop {
         let msg = match receiver.recv().await {
-            Some(msg) => msg,
+            Some(msg) => match msg {
+                Ok(msg) => msg,
+                Err(err) => {
+                    panic!("error decoding message: {}", err)
+                }
+            },
             None => {
+                log::debug!("stream terminated!");
                 break;
             }
         };
 
-        println!("Got a message {:?}", msg);
+        log::debug!("got a message {:?}", msg);
+        // terminate test.
+        if msg.data == "test 3" {
+            // why this hangs forever. instead of return
+            // the problem is when we "return" and the receiver is dropped, the subscribe thread is
+            // not terminated because it still waiting (subscribed) to the redis channel. Hence
+            // the thread never get a chance to "receive" the event (because server was stopped on return)
+            // hence the thread doesn't get a chance to try to send over the channel so it never
+            // detects that the receiver was dropped. Hence the thread is blocked forever.
+            // This however is because both the server and the client are running in the same
+            // process which is not a valid case. If the server is running separately it will keep
+            // sending events hence eventually the client subscribe will terminate
+            return;
+        }
     }
 }

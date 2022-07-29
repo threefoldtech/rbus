@@ -198,21 +198,19 @@ impl workers::Work for Worker {
 fn stream_worker(pool: Pool<RedisConnectionManager>, channel: String, mut receiver: Sink) {
     tokio::spawn(async move {
         while let Some(msg) = receiver.recv().await {
-            log::debug!("received event to streamer");
             let mut con = match pool.get().await {
                 Ok(con) => con,
-                Err(_) => {
-                    log::error!("failed to get connection");
+                Err(err) => {
+                    log::error!("failed to get connection: {}", err);
                     continue;
                 }
             };
             let _: () = match con.publish(&channel, msg.into_vec()).await {
                 Ok(x) => x,
-                Err(_) => {
-                    log::error!("failed to publish");
+                Err(err) => {
+                    log::error!("failed to publish event: {}", err);
                 }
             };
-            log::debug!("event published");
         }
     });
 }
