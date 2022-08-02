@@ -36,18 +36,28 @@ pub struct Data {
 pub trait Calculator {
     // input and outputs can be anything according to the rules above
     fn add(&self, a: f64, b: f64) -> anyhow::Result<(f64, f64)>;
-    // #[rename("Divide")]
+
+    #[rename("Divide")]
     fn divide(&self, a: f64, b: f64) -> Result<f64>;
     fn multiply(&self, a: f64, b: f64) -> Result<f64>;
 
     // methods can be declared async.
     async fn get_data(&self) -> Result<Data>;
+
+    #[stream]
+    async fn date(&self, rec: Sender<u32>);
+
+    #[stream]
+    async fn names(&self, rec: Sender<String>);
 }
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
     data: String,
 }
+
 // some implementation of our trait
+#[derive(Clone)]
 struct CalculatorImpl;
 
 /// async_trait is needed because we using async methods in tratis
@@ -71,6 +81,23 @@ impl Calculator for CalculatorImpl {
             binary: vec![],
             str: "Hello".into(),
         })
+    }
+
+    async fn date(&self, rec: Sender<u32>) {
+        loop {
+            // sleep
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let _ = rec.send(&10).await;
+        }
+    }
+
+    async fn names(&self, rec: Sender<String>) {
+        let name = "Ashraf".to_owned();
+        loop {
+            // sleep
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            let _ = rec.send(&name).await;
+        }
     }
 }
 

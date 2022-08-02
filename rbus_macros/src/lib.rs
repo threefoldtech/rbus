@@ -51,6 +51,39 @@ fn method_name(m: &TraitItemMethod) -> String {
 
     return format!("{}", m.sig.ident);
 }
+
+fn is_stream(m: &TraitItemMethod) -> bool {
+    // must take 2 arguments
+    if !m.attrs.iter().any(|att| att.path.is_ident("stream")) {
+        return false;
+    }
+
+    if m.sig.asyncness.is_none() {
+        panic!("stream method must be async");
+    }
+
+    if m.sig.inputs.len() != 2 {
+        panic!("stream method must take (&self, Sender<T>) as arguments");
+    }
+    // must return ()
+    if m.sig.output != ReturnType::Default {
+        panic!("stream method must not return any type");
+    }
+
+    let rec = &m.sig.inputs[1];
+
+    if let FnArg::Typed(typ) = rec {
+        if let Type::Path(p) = typ.ty.as_ref() {
+            if let Some(seg) = p.path.segments.iter().last() {
+                if format!("{}", seg.ident) != "Sender" {
+                    panic!("argument must be of a server::Sender<T> type");
+                }
+            }
+        }
+    }
+
+    return true;
+}
 /// annotate the service trait with `object` this will
 /// generate a usable server and client stubs.
 /// it accepts
@@ -118,60 +151,62 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     }
 
-    let dispatches = input
-        .items
-        .iter()
-        .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
-        .map(|item| {
-            if let TraitItem::Method(method) = item {
-                let name_id = &method.sig.ident;
-                let name_lit = method_name(method);
-                let args = (0..method.sig.inputs.len() - 1).map(syn::Index::from);
-                let branch = if method.sig.asyncness.is_none() {
-                    quote! {
-                        #name_lit => Ok(self
-                            .inner
-                            .#name_id(
-                                #( request.inputs.at(#args)?, )*
-                            )
-                            .into())
-                    }
-                } else {
-                    quote! {
-                        #name_lit => Ok(self
-                            .inner
-                            .#name_id(
-                                #( request.inputs.at(#args)?, )*
-                            ).await
-                            .into())
-                    }
-                };
-
-                return branch;
-            }
-
-            unreachable!();
-        });
-
-    let stub_calls = input
+    let functions: Vec<&TraitItem> = input
     .items
     .iter()
-    .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
-    .map(|item| {
+    .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))  && !is_stream(&m))).collect();
+
+    let streams: Vec<&TraitItem> = input
+    .items
+    .iter()
+    .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))  && is_stream(&m))).collect();
+
+    let dispatches = functions.iter().map(|item| {
+        if let TraitItem::Method(method) = item {
+            let name_id = &method.sig.ident;
+            let name_lit = method_name(method);
+            let args = (0..method.sig.inputs.len() - 1).map(syn::Index::from);
+            let branch = if method.sig.asyncness.is_none() {
+                quote! {
+                    #name_lit => Ok(self
+                        .inner
+                        .#name_id(
+                            #( request.inputs.at(#args)?, )*
+                        )
+                        .into())
+                }
+            } else {
+                quote! {
+                    #name_lit => Ok(self
+                        .inner
+                        .#name_id(
+                            #( request.inputs.at(#args)?, )*
+                        ).await
+                        .into())
+                }
+            };
+
+            return branch;
+        }
+
+        unreachable!();
+    });
+
+    let stub_calls = functions.iter().map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;
             let name_lit = method_name(method);
             let inputs = method.sig.inputs.iter().skip(1);
             let arg_names = method.sig.inputs.iter().skip(1).map(|arg| {
-               if let FnArg::Typed(a) = &arg {
+                if let FnArg::Typed(a) = &arg {
                     if let Pat::Ident(i) = a.pat.as_ref() {
                         return &i.ident;
                     }
-               }
-               unreachable!();
+                }
+                unreachable!();
             });
             let ret = return_inner_type(&method.sig.output).unwrap();
-            return quote!{
+            return quote! {
                 pub async fn #name(&self, #(#inputs,)*) -> protocol::Result<#ret> {
                     let req = protocol::Request::new(self.object.clone(), #name_lit)
                         #(.arg(#arg_names)?)*;
@@ -184,6 +219,23 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
             };
         }
         unreachable!()
+    });
+
+    let streams_init = streams.iter().map(|item| {
+        if let TraitItem::Method(method) = item {
+            let name = &method.sig.ident;
+            let name_lit = method_name(method);
+            return quote! {
+                let (sender, sink) = server::Sender::new();
+                let inner = self.inner.clone();
+                tokio::spawn(async move {
+                    inner.#name(sender).await;
+                });
+                sinks.insert(#name_lit.to_owned(), sink);
+            };
+        }
+
+        unreachable!();
     });
 
     let vis = &input.vis;
@@ -204,7 +256,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
 
             pub struct #name_object<T>
             where
-                T: #name_id,
+                T: #name_id + Clone,
             {
                 inner: T,
             }
@@ -212,7 +264,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
             #[async_trait::async_trait]
             impl<T> server::Object for #name_object<T>
             where
-                T: #name_id + Send + Sync + 'static,
+                T: #name_id + Clone + Send + Sync + 'static,
             {
                 fn id(&self) -> protocol::ObjectID {
                     protocol::ObjectID::new(#name_lit, #version_lit)
@@ -227,13 +279,15 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
                 }
                 fn streams(&self) -> protocol::Result<HashMap<String, server::Sink>>{
                     // TODO: build streams from trait definition
-                    Ok(HashMap::default())
+                    let mut sinks = HashMap::default();
+                    #(#streams_init)*
+                    Ok(sinks)
                 }
             }
 
             impl<T> From<T> for #name_object<T>
             where
-                T: #name_id,
+                T: #name_id + Clone,
             {
                 fn from(inner: T) -> Self {
                     Self { inner }
