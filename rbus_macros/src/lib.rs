@@ -23,7 +23,23 @@ fn return_inner_type(
 
     Err("all interface method must return Result<T>")
 }
+fn sender_inner_type(
+    ty: &FnArg,
+) -> Result<&Punctuated<GenericArgument, syn::token::Comma>, &'static str> {
+    if let FnArg::Typed(t) = &ty {
+        if let Type::Path(p) = t.ty.as_ref() {
+            if let Some(seg) = p.path.segments.iter().last() {
+                if format!("{}", seg.ident) == "Sender" {
+                    if let PathArguments::AngleBracketed(inner) = &seg.arguments {
+                        return Ok(&inner.args);
+                    }
+                }
+            }
+        }
+    }
 
+    Err("all interface method must return Result<T>")
+}
 fn method_name(m: &TraitItemMethod) -> String {
     for attr in m.attrs.iter() {
         if !attr.path.is_ident("rename") {
@@ -231,7 +247,22 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
         }
         unreachable!()
     });
+    let streams_stub_calls = streams.iter().map(|item| {
+        if let TraitItem::Method(method) = item {
+            let name = &method.sig.ident;
+            let name_lit = method_name(method);
+            let ret = sender_inner_type(&method.sig.inputs[1]).unwrap();
+            return quote! {
+                pub async fn #name(&self) -> client::Receiver<#ret> {
+                    let mut client = self.client.clone();
+                    let receiver = client.stream(&self.module, self.object.clone(), #name_lit).await.unwrap();
 
+                    receiver
+                }
+            };
+        }
+        unreachable!()
+    });
     let streams_init = streams.iter().map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;
@@ -331,6 +362,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
                 }
 
                 #(#stub_calls)*
+                #(#streams_stub_calls)*
             }
         }
 

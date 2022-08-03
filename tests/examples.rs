@@ -159,6 +159,8 @@ async fn test_encode() {
 
 #[tokio::test]
 async fn full() {
+    simple_logger::init_with_level(log::Level::Debug).unwrap();
+
     let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
     const MODULE: &str = "full-test";
@@ -186,6 +188,30 @@ async fn full() {
     assert!(matches!(
         calc.divide(10f64, 0f64).await,
         Err(Error::Call(err)) if err.message == "cannot divide by zero"));
+
+    // test stubs works for streams
+    let mut receiver: Receiver<String> = calc.names().await;
+    let mut count = 0;
+    loop {
+        let msg = match receiver.recv().await {
+            Some(msg) => match msg {
+                Ok(msg) => msg,
+                Err(err) => {
+                    panic!("error decoding message: {}", err)
+                }
+            },
+            None => {
+                log::debug!("stream terminated!");
+                break;
+            }
+        };
+
+        log::debug!("got a message {:?}", msg);
+        count += 1;
+        if count == 3 && msg == "Ashraf" {
+            break;
+        }
+    }
 }
 
 #[tokio::test]
@@ -205,13 +231,11 @@ async fn testing_streams() {
 
     tokio::spawn(server.run());
 
-    //tokio::time::sleep(Duration::from_secs(3)).await;
     let client = rbus::Client::new("redis://localhost:6379").await.unwrap();
     let mut receiver: Receiver<Message> = client
         .stream(MODULE, ObjectID::new("streamer", "1.0"), "test")
         .await
         .unwrap();
-    // let join_handle = tokio::spawn(async move {
     loop {
         let msg = match receiver.recv().await {
             Some(msg) => match msg {
@@ -245,3 +269,5 @@ async fn testing_streams() {
         }
     }
 }
+
+fn main() {}
