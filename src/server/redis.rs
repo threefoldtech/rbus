@@ -26,11 +26,7 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn new<S>(
-        pool: Pool<RedisConnectionManager>,
-        module: S,
-        workers: usize,
-    ) -> Result<Server>
+    pub fn new<S>(pool: Pool<RedisConnectionManager>, module: S, workers: usize) -> Result<Server>
     where
         S: AsRef<str>,
     {
