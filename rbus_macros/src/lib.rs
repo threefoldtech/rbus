@@ -238,8 +238,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
                     let req = protocol::Request::new(self.object.clone(), #name_lit)
                         #(.arg(#arg_names)?)*;
 
-                    let mut client = self.client.clone();
-                    let out = client.request(&self.module, req).await?;
+                    let out = self.client.request(&self.module, req).await?;
 
                     out.into()
                 }
@@ -253,9 +252,8 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
             let name_lit = method_name(method);
             let ret = sender_inner_type(&method.sig.inputs[1]).unwrap();
             return quote! {
-                pub async fn #name(&self) -> client::Receiver<#ret> {
-                    let mut client = self.client.clone();
-                    let receiver = client.stream(&self.module, self.object.clone(), #name_lit).await.unwrap();
+                pub async fn #name(&self) ->  protocol::Result<client::Receiver<#ret>> {
+                    let receiver = self.client.stream(&self.module, self.object.clone(), #name_lit).await;
 
                     receiver
                 }

@@ -190,7 +190,7 @@ async fn full() {
         Err(Error::Call(err)) if err.message == "cannot divide by zero"));
 
     // test stubs works for streams
-    let mut receiver: Receiver<String> = calc.names().await;
+    let mut receiver: Receiver<String> = calc.names().await.unwrap();
     let mut count = 0;
     loop {
         let msg = match receiver.recv().await {
