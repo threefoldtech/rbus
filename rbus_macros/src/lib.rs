@@ -238,6 +238,16 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
         unreachable!();
     });
 
+    let bounds = if streams.len() > 0 {
+        quote! {
+            #name_id + Clone + Send + Sync + 'static
+        }
+    } else {
+        quote! {
+            #name_id + Send + Sync + 'static
+        }
+    };
+
     let vis = &input.vis;
     let output = quote! {
         #[allow(non_snake_case)]
@@ -256,7 +266,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
 
             pub struct #name_object<T>
             where
-                T: #name_id + Clone,
+                T: #bounds,
             {
                 inner: T,
             }
@@ -264,7 +274,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
             #[async_trait::async_trait]
             impl<T> server::Object for #name_object<T>
             where
-                T: #name_id + Clone + Send + Sync + 'static,
+                T: #bounds,
             {
                 fn id(&self) -> protocol::ObjectID {
                     protocol::ObjectID::new(#name_lit, #version_lit)
@@ -287,7 +297,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
 
             impl<T> From<T> for #name_object<T>
             where
-                T: #name_id + Clone,
+                T: #bounds,
             {
                 fn from(inner: T) -> Self {
                     Self { inner }
