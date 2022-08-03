@@ -117,6 +117,17 @@ fn is_stream(m: &TraitItemMethod) -> bool {
 /// #[rename("new_name")] that can be added on method to rename the method. Since rust uses
 /// snake_case, while Go uses CamelCase. rename is needed if method will be used across languages
 ///
+/// Streams (or events) are supported by adding a method to the trait as follows:
+///
+/// ```example
+///   #[stream]
+///   async fn name_of_stream(&self, Sender<T>);
+/// ```
+/// where T is any concrete type. This method then can use sender to broadcast objects of type T
+/// whenever it's needed (timer, on certain events, etc...)
+///
+/// The stream functions doesn't have to return since it is spawned in it's own routing, hence when
+/// streams needed the implementation of the trait need to be Clone (self need to be Clone).
 #[proc_macro_attribute]
 pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
