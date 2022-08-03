@@ -167,7 +167,7 @@ async fn full() {
     // build the object dispatcher
     let calc = CalculatorObject::from(CalculatorImpl);
     // create the module (server)
-    let mut server = rbus::Server::new(pool.clone(), MODULE, 3).await.unwrap();
+    let mut server = rbus::Server::new(pool.clone(), MODULE, 3).unwrap();
     // register the object
     server.register(calc);
 
@@ -225,7 +225,7 @@ async fn testing_streams() {
     // let calc = CalculatorObject::from(CalculatorImpl);
     let calc = StreamTest;
     // create the module (server)
-    let mut server = rbus::Server::new(pool.clone(), MODULE, 3).await.unwrap();
+    let mut server = rbus::Server::new(pool.clone(), MODULE, 3).unwrap();
     // register the object
     server.register(calc);
 
@@ -269,5 +269,3 @@ async fn testing_streams() {
         }
     }
 }
-
-fn main() {}
