@@ -157,6 +157,7 @@ async fn test_encode() {
     assert_eq!(msg.data, message.data);
 }
 
+#[ignore]
 #[tokio::test]
 async fn full() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
@@ -214,6 +215,7 @@ async fn full() {
     }
 }
 
+#[ignore]
 #[tokio::test]
 async fn testing_streams() {
     simple_logger::init_with_level(log::Level::Debug).unwrap();
