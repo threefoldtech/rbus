@@ -23,7 +23,23 @@ fn return_inner_type(
 
     Err("all interface method must return Result<T>")
 }
+fn sender_inner_type(
+    ty: &FnArg,
+) -> Result<&Punctuated<GenericArgument, syn::token::Comma>, &'static str> {
+    if let FnArg::Typed(t) = &ty {
+        if let Type::Path(p) = t.ty.as_ref() {
+            if let Some(seg) = p.path.segments.iter().last() {
+                if format!("{}", seg.ident) == "Sender" {
+                    if let PathArguments::AngleBracketed(inner) = &seg.arguments {
+                        return Ok(&inner.args);
+                    }
+                }
+            }
+        }
+    }
 
+    Err("all interface method must return Result<T>")
+}
 fn method_name(m: &TraitItemMethod) -> String {
     for attr in m.attrs.iter() {
         if !attr.path.is_ident("rename") {
@@ -50,6 +66,39 @@ fn method_name(m: &TraitItemMethod) -> String {
     }
 
     return format!("{}", m.sig.ident);
+}
+
+fn is_stream(m: &TraitItemMethod) -> bool {
+    // must take 2 arguments
+    if !m.attrs.iter().any(|att| att.path.is_ident("stream")) {
+        return false;
+    }
+
+    if m.sig.asyncness.is_none() {
+        panic!("stream method must be async");
+    }
+
+    if m.sig.inputs.len() != 2 {
+        panic!("stream method must take (&self, Sender<T>) as arguments");
+    }
+    // must return ()
+    if m.sig.output != ReturnType::Default {
+        panic!("stream method must not return any type");
+    }
+
+    let rec = &m.sig.inputs[1];
+
+    if let FnArg::Typed(typ) = rec {
+        if let Type::Path(p) = typ.ty.as_ref() {
+            if let Some(seg) = p.path.segments.iter().last() {
+                if format!("{}", seg.ident) != "Sender" {
+                    panic!("argument must be of a server::Sender<T> type");
+                }
+            }
+        }
+    }
+
+    return true;
 }
 /// annotate the service trait with `object` this will
 /// generate a usable server and client stubs.
@@ -84,6 +133,17 @@ fn method_name(m: &TraitItemMethod) -> String {
 /// #[rename("new_name")] that can be added on method to rename the method. Since rust uses
 /// snake_case, while Go uses CamelCase. rename is needed if method will be used across languages
 ///
+/// Streams (or events) are supported by adding a method to the trait as follows:
+///
+/// ```example
+///   #[stream]
+///   async fn name_of_stream(&self, Sender<T>);
+/// ```
+/// where T is any concrete type. This method then can use sender to broadcast objects of type T
+/// whenever it's needed (timer, on certain events, etc...)
+///
+/// The stream functions doesn't have to return since it is spawned in it's own routing, hence when
+/// streams needed the implementation of the trait need to be Clone (self need to be Clone).
 #[proc_macro_attribute]
 pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
@@ -101,7 +161,6 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let name_id = &input.ident;
     let name = format!("{}", name_id);
-    let name_mod = format_ident!("{}_mod", name_id);
     let name_object = format_ident!("{}Object", name_id);
     let name_stub = format_ident!("{}Stub", name_id);
 
@@ -118,66 +177,67 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
         }
     }
 
-    let dispatches = input
-        .items
-        .iter()
-        .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
-        .map(|item| {
-            if let TraitItem::Method(method) = item {
-                let name_id = &method.sig.ident;
-                let name_lit = method_name(method);
-                let args = (0..method.sig.inputs.len() - 1).map(syn::Index::from);
-                let branch = if method.sig.asyncness.is_none() {
-                    quote! {
-                        #name_lit => Ok(self
-                            .inner
-                            .#name_id(
-                                #( request.inputs.at(#args)?, )*
-                            )
-                            .into())
-                    }
-                } else {
-                    quote! {
-                        #name_lit => Ok(self
-                            .inner
-                            .#name_id(
-                                #( request.inputs.at(#args)?, )*
-                            ).await
-                            .into())
-                    }
-                };
-
-                return branch;
-            }
-
-            unreachable!();
-        });
-
-    let stub_calls = input
+    let functions: Vec<&TraitItem> = input
     .items
     .iter()
-    .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))))
-    .map(|item| {
+    .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))  && !is_stream(&m))).collect();
+
+    let streams: Vec<&TraitItem> = input
+    .items
+    .iter()
+    .filter(|item| matches!(item, TraitItem::Method(m) if !m.sig.inputs.is_empty() && matches!(m.sig.inputs[0], FnArg::Receiver(_))  && is_stream(&m))).collect();
+
+    let dispatches = functions.iter().map(|item| {
+        if let TraitItem::Method(method) = item {
+            let name_id = &method.sig.ident;
+            let name_lit = method_name(method);
+            let args = (0..method.sig.inputs.len() - 1).map(syn::Index::from);
+            let branch = if method.sig.asyncness.is_none() {
+                quote! {
+                    #name_lit => Ok(self
+                        .inner
+                        .#name_id(
+                            #( request.inputs.at(#args)?, )*
+                        )
+                        .into())
+                }
+            } else {
+                quote! {
+                    #name_lit => Ok(self
+                        .inner
+                        .#name_id(
+                            #( request.inputs.at(#args)?, )*
+                        ).await
+                        .into())
+                }
+            };
+
+            return branch;
+        }
+
+        unreachable!();
+    });
+
+    let stub_calls = functions.iter().map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;
             let name_lit = method_name(method);
             let inputs = method.sig.inputs.iter().skip(1);
             let arg_names = method.sig.inputs.iter().skip(1).map(|arg| {
-               if let FnArg::Typed(a) = &arg {
+                if let FnArg::Typed(a) = &arg {
                     if let Pat::Ident(i) = a.pat.as_ref() {
                         return &i.ident;
                     }
-               }
-               unreachable!();
+                }
+                unreachable!();
             });
             let ret = return_inner_type(&method.sig.output).unwrap();
-            return quote!{
-                pub async fn #name(&self, #(#inputs,)*) -> protocol::Result<#ret> {
-                    let req = protocol::Request::new(self.object.clone(), #name_lit)
+            return quote! {
+                pub async fn #name(&self, #(#inputs,)*) -> rbus::protocol::Result<#ret> {
+                    let req = rbus::protocol::Request::new(self.object.clone(), #name_lit)
                         #(.arg(#arg_names)?)*;
 
-                    let mut client = self.client.clone();
-                    let out = client.request(&self.module, req).await?;
+                    let out = self.client.request(&self.module, req).await?;
 
                     out.into()
                 }
@@ -185,77 +245,113 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
         }
         unreachable!()
     });
+    let streams_stub_calls = streams.iter().map(|item| {
+        if let TraitItem::Method(method) = item {
+            let name = &method.sig.ident;
+            let name_lit = method_name(method);
+            let ret = sender_inner_type(&method.sig.inputs[1]).unwrap();
+            return quote! {
+                pub async fn #name(&self) -> rbus::protocol::Result<rbus::client::Receiver<#ret>> {
+                    let receiver = self.client.stream(&self.module, self.object.clone(), #name_lit).await;
+
+                    receiver
+                }
+            };
+        }
+        unreachable!()
+    });
+    let streams_init = streams.iter().map(|item| {
+        if let TraitItem::Method(method) = item {
+            let name = &method.sig.ident;
+            let name_lit = method_name(method);
+            return quote! {
+                let (sender, sink) = rbus::server::Sender::new();
+                let inner = self.inner.clone();
+                tokio::spawn(async move {
+                    inner.#name(sender).await;
+                });
+                sinks.insert(#name_lit.to_owned(), sink);
+            };
+        }
+
+        unreachable!();
+    });
+
+    let bounds = if streams.len() > 0 {
+        quote! {
+            #name_id + Clone + Send + Sync + 'static
+        }
+    } else {
+        quote! {
+            #name_id + Send + Sync + 'static
+        }
+    };
 
     let vis = &input.vis;
     let output = quote! {
         #[allow(non_snake_case)]
-        mod #name_mod {
-            use super::*;
-            use rbus::{
-                server,
-                client,
-                protocol
-            };
 
-            #[async_trait::async_trait]
-            #cleaned
+        #[async_trait::async_trait]
+        #cleaned
 
-            pub struct #name_object<T>
-            where
-                T: #name_id,
-            {
-                inner: T,
+        #vis struct #name_object<T>
+        where
+            T: #bounds,
+        {
+            inner: T,
+        }
+
+        #[async_trait::async_trait]
+        impl<T> rbus::server::Object for #name_object<T>
+        where
+            T: #bounds,
+        {
+            fn id(&self) -> rbus::protocol::ObjectID {
+                rbus::protocol::ObjectID::new(#name_lit, #version_lit)
             }
 
-            #[async_trait::async_trait]
-            impl<T> server::Object for #name_object<T>
-            where
-                T: #name_id + Send + Sync + 'static,
-            {
-                fn id(&self) -> protocol::ObjectID {
-                    protocol::ObjectID::new(#name_lit, #version_lit)
-                }
+            async fn dispatch(&self, request: rbus::protocol::Request) -> rbus::protocol::Result<rbus::protocol::Output> {
+                match request.method.as_str() {
+                    #(#dispatches,)*
 
-                async fn dispatch(&self, request: protocol::Request) -> protocol::Result<protocol::Output> {
-                    match request.method.as_str() {
-                        #(#dispatches,)*
-
-                        _ => Err(protocol::Error::UnknownMethod(request.method)),
-                    }
+                    _ => Err(rbus::protocol::Error::UnknownMethod(request.method)),
                 }
             }
-
-            impl<T> From<T> for #name_object<T>
-            where
-                T: #name_id,
-            {
-                fn from(inner: T) -> Self {
-                    Self { inner }
-                }
-            }
-
-            pub struct #name_stub {
-                module: String,
-                client: client::Client,
-                object: protocol::ObjectID,
-            }
-
-            impl #name_stub {
-                pub fn new<S: Into<String>>(module: S, client: client::Client) -> #name_stub {
-                    #name_stub {
-                        module: module.into(),
-                        client,
-                        object: protocol::ObjectID::new(#name_lit, #version_lit),
-                    }
-                }
-
-                #(#stub_calls)*
+            fn streams(&self) -> rbus::protocol::Result<std::collections::HashMap<String, rbus::server::Sink>>{
+                // TODO: build streams from trait definition
+                let mut sinks = std::collections::HashMap::default();
+                #(#streams_init)*
+                Ok(sinks)
             }
         }
 
-        #vis use #name_mod :: #name_id;
-        #vis use #name_mod :: #name_object;
-        #vis use #name_mod :: #name_stub;
+        impl<T> From<T> for #name_object<T>
+        where
+            T: #bounds,
+        {
+            fn from(inner: T) -> Self {
+                Self { inner }
+            }
+        }
+
+        #vis struct #name_stub {
+            module: String,
+            client: rbus::client::Client,
+            object: rbus::protocol::ObjectID,
+        }
+
+        impl #name_stub {
+            pub fn new<S: Into<String>>(module: S, client: rbus::client::Client) -> #name_stub {
+                #name_stub {
+                    module: module.into(),
+                    client,
+                    object: rbus::protocol::ObjectID::new(#name_lit, #version_lit),
+                }
+            }
+
+            #(#stub_calls)*
+            #(#streams_stub_calls)*
+        }
     };
 
     output.into()
