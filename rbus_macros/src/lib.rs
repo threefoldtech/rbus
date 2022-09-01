@@ -299,7 +299,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let stub_from = match module_lit {
         Some(module) => quote! {
             impl From<rbus::client::Client> for #name_stub {
-                pub fn from(client: rbus::client::Client) -> #name_stub {
+                fn from(client: rbus::client::Client) -> #name_stub {
                     #name_stub {
                         module: #module.into(),
                         client,
