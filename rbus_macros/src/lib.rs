@@ -105,12 +105,17 @@ fn is_stream(m: &TraitItemMethod) -> bool {
 /// it accepts
 /// - name [optional] default to trait name
 /// - version [optional] default to 1.0
+/// - module [optional] default to None
 ///
 /// NOTE:
 /// - only trait methods with first argument as receiver will be available for RPC
 /// - receiver must be a shared ref to self (&self)
 /// - all input arguments must be of type <T: Serialize>
 /// - return must be a Result (any Result) as long as the E type can be stringfied <E: Display>
+/// - `module` is only used to generate the stub. if provided there will be a From<Client> implementation to create
+///   the stub directly from the client since the module name will be known
+///
+/// > Note that the same module name need to be used by the server otherwise it will not be route-able.
 ///
 /// Once a trait is marked as Object, two extra structures will be available in the same scope as the
 /// annotated trait.
@@ -144,6 +149,8 @@ fn is_stream(m: &TraitItemMethod) -> bool {
 ///
 /// The stream functions doesn't have to return since it is spawned in it's own routing, hence when
 /// streams needed the implementation of the trait need to be Clone (self need to be Clone).
+///
+///
 #[proc_macro_attribute]
 pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as AttributeArgs);
@@ -166,13 +173,15 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
 
     let mut name_lit = Lit::Str(LitStr::new(&name, name_id.span()));
     let mut version_lit = Lit::Str(LitStr::new("1.0", name_id.span()));
-
+    let mut module_lit = None;
     for arg in args {
         if let NestedMeta::Meta(Meta::NameValue(value)) = arg {
             if value.path.is_ident("name") {
                 name_lit = value.lit;
             } else if value.path.is_ident("version") {
                 version_lit = value.lit;
+            } else if value.path.is_ident("module") {
+                module_lit = Some(value.lit);
             }
         }
     }
@@ -190,7 +199,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let dispatches = functions.iter().map(|item| {
         if let TraitItem::Method(method) = item {
             let name_id = &method.sig.ident;
-            let name_lit = method_name(method);
+            let name_lit = method_name(&method);
             let args = (0..method.sig.inputs.len() - 1).map(syn::Index::from);
             let branch = if method.sig.asyncness.is_none() {
                 quote! {
@@ -221,7 +230,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let stub_calls = functions.iter().map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;
-            let name_lit = method_name(method);
+            let name_lit = method_name(&method);
             let inputs = method.sig.inputs.iter().skip(1);
             let arg_names = method.sig.inputs.iter().skip(1).map(|arg| {
                 if let FnArg::Typed(a) = &arg {
@@ -248,7 +257,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let streams_stub_calls = streams.iter().map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;
-            let name_lit = method_name(method);
+            let name_lit = method_name(&method);
             let ret = sender_inner_type(&method.sig.inputs[1]).unwrap();
             return quote! {
                 pub async fn #name(&self) -> rbus::protocol::Result<rbus::client::Receiver<#ret>> {
@@ -263,7 +272,7 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
     let streams_init = streams.iter().map(|item| {
         if let TraitItem::Method(method) = item {
             let name = &method.sig.ident;
-            let name_lit = method_name(method);
+            let name_lit = method_name(&method);
             return quote! {
                 let (sender, sink) = rbus::server::Sender::new();
                 let inner = self.inner.clone();
@@ -285,6 +294,22 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
         quote! {
             #name_id + Send + Sync + 'static
         }
+    };
+
+    let stub_from = match module_lit {
+        Some(module) => quote! {
+            impl From<rbus::client::Client> for #name_stub {
+                pub fn from(client: rbus::client::Client) -> #name_stub {
+                    #name_stub {
+                        module: #module.into(),
+                        client,
+                        object: rbus::protocol::ObjectID::new(#name_lit, #version_lit),
+                    }
+                }
+            }
+        },
+
+        None => quote! {},
     };
 
     let vis = &input.vis;
@@ -352,6 +377,8 @@ pub fn object(args: TokenStream, input: TokenStream) -> TokenStream {
             #(#stub_calls)*
             #(#streams_stub_calls)*
         }
+
+        #stub_from
     };
 
     output.into()

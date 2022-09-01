@@ -31,7 +31,7 @@ pub struct Data {
 // - return must be a Result (any Result) as long as the E type can be stringfied <E: Display>
 // please check docs for `object` for more details
 
-#[object(name = "calculator", version = "1.0")]
+#[object(module = "test", name = "calculator", version = "1.0")]
 #[async_trait::async_trait]
 pub trait Calculator {
     // input and outputs can be anything according to the rules above
@@ -164,7 +164,7 @@ async fn full() {
 
     let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
-    const MODULE: &str = "full-test";
+    const MODULE: &str = "test";
     // build the object dispatcher
     let calc = CalculatorObject::from(CalculatorImpl);
     // create the module (server)
@@ -179,7 +179,7 @@ async fn full() {
 
     // same as CalculatorObject, the CalculatorStub is auto generated in
     // this scope. Not the
-    let calc = CalculatorStub::new(MODULE, client);
+    let calc = CalculatorStub::from(client);
 
     assert_eq!((3f64, -1f64), calc.add(1f64, 2f64).await.unwrap());
     assert_eq!(5f64, calc.divide(10f64, 2f64).await.unwrap());
@@ -222,7 +222,7 @@ async fn testing_streams() {
 
     let pool = rbus::pool("redis://localhost:6379").await.unwrap();
 
-    const MODULE: &str = "full-test";
+    const MODULE: &str = "test";
     // build the object dispatcher
     // let calc = CalculatorObject::from(CalculatorImpl);
     let calc = StreamTest;
